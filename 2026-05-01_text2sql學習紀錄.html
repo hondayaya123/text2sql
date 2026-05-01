@@ -1,0 +1,1249 @@
+<h1>2026-05-01 Text2SQL 學習紀錄</h1>
+<h2>目錄</h2>
+<ul>
+<li><a href="#q1-chess-%E8%AB%96%E6%96%87%E7%9A%84-full-information-%E7%AD%96%E7%95%A5">Q1. CHESS 論文的 &quot;Full Information&quot; 策略</a></li>
+<li><a href="#q2-wrenai-%E7%9A%84%E6%84%8F%E5%9C%96%E5%88%86%E9%A1%9E">Q2. WrenAI 的意圖分類</a></li>
+<li><a href="#q3-%E8%BC%95%E9%87%8F%E5%88%86%E9%A1%9E-prompt-%E6%80%8E%E9%BA%BC%E5%81%9A">Q3. 輕量分類 Prompt 怎麼做</a></li>
+<li><a href="#q4-wrenai-column-level-filtering--cot-reasoning">Q4. WrenAI Column-level filtering + CoT Reasoning</a></li>
+<li><a href="#q6-yaml-%E5%AD%97%E5%85%B8-vs-wrenai-mdl">Q6. YAML 字典 vs WrenAI MDL</a></li>
+<li><a href="#q7-question_recommendation-%E5%92%8C-data_assistance">Q7. question_recommendation 和 data_assistance</a></li>
+<li><a href="#%E5%9B%9B%E7%B3%BB%E7%B5%B1-text2sql-%E6%9E%B6%E6%A7%8B%E4%B8%A6%E5%88%97%E6%AF%94%E8%BC%83">四系統 Text2SQL 架構並列比較</a></li>
+<li><a href="#%E7%BC%BA%E5%8F%A3%E5%AF%86%E5%BA%A6%E4%B8%80%E8%A6%BD">缺口密度一覽</a></li>
+<li><a href="#%E5%9B%9B%E7%B3%BB%E7%B5%B1%E8%A8%AD%E8%A8%88%E5%93%B2%E5%AD%B8%E5%B0%8D%E6%AF%94">四系統設計哲學對比</a></li>
+<li><a href="#%E5%80%BC%E5%BE%97%E5%80%9F%E9%91%91%E7%9A%84%E8%A8%AD%E8%A8%88">值得借鑑的設計</a></li>
+<li><a href="#%E7%B8%BD%E7%B5%90%E6%9C%80%E5%80%BC%E5%BE%97%E5%81%9A%E7%9A%84%E4%B8%89%E4%BB%B6%E4%BA%8B">總結：最值得做的三件事</a></li>
+</ul>
+<hr>
+<h2>Q1. CHESS 論文的 &quot;Full Information&quot; 策略</h2>
+<p>CHESS 把 context 分三個等級做對照實驗：</p>
+<h3>❌ Reduced Info（基本款，大多數系統）</h3>
+<p>只給 table name + column name</p>
+<pre><code>→ SELECT * FROM CP_WAFER WHERE ...
+</code></pre>
+<h3>⚠️ Basic Info（一般款）</h3>
+<p>加上 column type + nullable</p>
+<pre><code>→ 知道 YIELD 是 NUMBER，TEST_TIME 是 DATE
+</code></pre>
+<h3>✅ Full Information（CHESS 策略）</h3>
+<pre><code>TABLE: CP_WAFER
+COLUMNS:
+  LOT_ID     VARCHAR2(20) NOT NULL  -- 批次識別碼
+  WAFER_ID   VARCHAR2(5)  NOT NULL  -- 晶圓識別碼
+  YIELD      NUMBER(7,4)            -- 良率 (ex: 0.9523, 0.8800)
+  VALID_FLAG NUMBER(1,0)            -- 1=有效 0=作廢
+FOREIGN KEY: LOT_ID → CP_LOT.LOT_ID
+SAMPLE VALUES:
+  YIELD: [0.9850, 0.9123, 0.8741]
+  VALID_FLAG: [0, 1]
+</code></pre>
+<h3>關鍵洞察</h3>
+<p>CHESS 論文發現光是加上 <strong>sample values</strong>，精準度提升 <strong>8-12%</strong>。原因是：</p>
+<ul>
+<li><code>YIELD = 0.9850</code> → LLM 知道這是 0~1 的小數，不是百分比</li>
+<li><code>VALID_FLAG: [0, 1]</code> → LLM 知道用 <code>= 1</code> 而不是 <code>= &#39;Y&#39;</code> 或 <code>= TRUE</code></li>
+</ul>
+<blockquote>
+<p>你的 YAML 已經做了這件事（<code>VALID_FLAG: &quot;有效旗標（1=有效 0=作廢）&quot;</code>），只是沒有塞真實的 sample values 進去。</p>
+</blockquote>
+<hr>
+<h2>Q2. WrenAI 的意圖分類</h2>
+<p>WrenAI 在每次查詢進來時，先呼叫一個 LLM（不是生成 SQL 的那個），<strong>只做一件事：分類</strong>。</p>
+<h3>實際 Prompt 結構</h3>
+<pre><code>[System]
+你是一個查詢意圖分類器。根據資料庫 schema 和使用者問題，
+將問題分類為以下四種之一：
+- TEXT_TO_SQL: 問題可以用 SQL 查詢回答
+- GENERAL: 一般性問題，不需要查 DB（例：什麼是良率？）
+- USER_GUIDE: 問系統怎麼用（例：我怎麼查批次資料？）
+- MISLEADING_QUERY: 問題模糊或無法查詢（例：哪個最好？）
+
+輸出 JSON：
+{ &quot;classification&quot;: &quot;TEXT_TO_SQL&quot;,
+  &quot;rephrased_question&quot;: &quot;查詢批次 L001 所有晶圓的良率&quot;,
+  &quot;reasoning&quot;: &quot;問題明確指定批次號和查詢目標，可生成 SQL&quot; }
+
+[User]
+Schema: CP_WAFER (LOT_ID, WAFER_ID, YIELD...)
+問題: 查一下 L001 的晶圓狀況
+</code></pre>
+<h3>實際效果（舉例）</h3>
+<table>
+<thead>
+<tr>
+<th>使用者輸入</th>
+<th>分類結果</th>
+<th>後續動作</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>查 L001 所有晶圓的良率</td>
+<td>TEXT_TO_SQL</td>
+<td>進入 SQL pipeline</td>
+</tr>
+<tr>
+<td>良率是什麼意思</td>
+<td>GENERAL</td>
+<td>直接回答，不查 DB</td>
+</tr>
+<tr>
+<td>哪個批次最好</td>
+<td>MISLEADING</td>
+<td>回覆：「請問是指哪個時間範圍？哪個產品？」</td>
+</tr>
+<tr>
+<td>我怎麼查 CP 資料</td>
+<td>USER_GUIDE</td>
+<td>回傳使用說明</td>
+</tr>
+<tr>
+<td>刪掉 L001 的資料</td>
+<td>MISLEADING</td>
+<td>回覆：「本系統僅供查詢，不支援資料修改」</td>
+</tr>
+</tbody></table>
+<blockquote>
+<p><strong>重要</strong>：<code>rephrased_question</code> 的作用是把口語化問題標準化：</p>
+<ul>
+<li>原始：「查一下上週 CP 的狀況」</li>
+<li>改寫：「查詢 2026-04-21 至 2026-04-27 期間所有 CP_LOT 的批次與良率」</li>
+</ul>
+<p>這個改寫後的版本才會進入後續的向量搜尋和 SQL 生成。</p>
+</blockquote>
+<hr>
+<h2>Q3. 輕量分類 Prompt 怎麼做</h2>
+<p>不用複雜架構，一個 prompt call 就夠，關鍵是定義好分類規則：</p>
+<pre><code class="language-python">INTENT_CLASSIFIER_PROMPT = &quot;&quot;&quot;
+你是查詢分類器。根據使用者的問題，輸出 JSON 分類結果。
+
+資料庫模組: {available_modules}
+(CP=晶圓針測, WAT=電性測試)
+
+分類規則：
+- TEXT_TO_SQL: 明確想查數據、批次、良率、比較、趨勢
+- AMBIGUOUS:   問題缺少必要資訊（時間/批次/產品）才能查
+- KNOWLEDGE:   問概念定義、公式、規則（不需查DB）
+- INVALID:     要求修改資料、系統無法處理的請求
+
+輸出格式：
+{
+  &quot;intent&quot;: &quot;TEXT_TO_SQL | AMBIGUOUS | KNOWLEDGE | INVALID&quot;,
+  &quot;missing_info&quot;: [&quot;時間範圍&quot;, &quot;批次號&quot;],  // 只在 AMBIGUOUS 時填
+  &quot;rephrased&quot;: &quot;標準化後的問題&quot;,
+  &quot;clarify_question&quot;: &quot;請問要查哪個時間範圍的資料？&quot;  // 只在 AMBIGUOUS 時填
+}
+
+使用者問題: {user_question}
+&quot;&quot;&quot;
+</code></pre>
+<h3>判定邏輯舉例</h3>
+<p><strong>輸入</strong>: <code>&quot;查一下良率&quot;</code></p>
+<pre><code class="language-json">{
+  &quot;intent&quot;: &quot;AMBIGUOUS&quot;,
+  &quot;missing_info&quot;: [&quot;時間範圍&quot;, &quot;產品或批次&quot;],
+  &quot;clarify_question&quot;: &quot;請問要查哪個產品、哪段時間的良率？&quot;
+}
+</code></pre>
+<p><strong>輸入</strong>: <code>&quot;查 L2024-001 這個批次的每片晶圓良率&quot;</code></p>
+<pre><code class="language-json">{
+  &quot;intent&quot;: &quot;TEXT_TO_SQL&quot;,
+  &quot;rephrased&quot;: &quot;查詢批次 L2024-001 的 CP_WAFER 各 WAFER_ID 對應 YIELD 值&quot;
+}
+</code></pre>
+<p><strong>輸入</strong>: <code>&quot;良率怎麼計算的&quot;</code></p>
+<pre><code class="language-json">{
+  &quot;intent&quot;: &quot;KNOWLEDGE&quot;
+}
+</code></pre>
+<p>→ 直接從 business YAML 的 <code>businessRules</code> 回答，不進 SQL pipeline</p>
+<hr>
+<h2>Q4. WrenAI Column-level filtering + CoT Reasoning</h2>
+<p>以真實例子示範完整流程：</p>
+<blockquote>
+<p><strong>使用者輸入</strong>：查 L001 批次的晶圓良率分布</p>
+</blockquote>
+<h3>Step 1 — Table Retrieval（向量搜尋）</h3>
+<p><strong>Input</strong>: <code>&quot;查 L001 批次的晶圓良率分布&quot;</code></p>
+<p>向量搜尋命中：</p>
+<table>
+<thead>
+<tr>
+<th>Table</th>
+<th>Score</th>
+<th>說明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>CP_WAFER</td>
+<td>0.91</td>
+<td>含 YIELD, WAFER_ID</td>
+</tr>
+<tr>
+<td>CP_LOT</td>
+<td>0.85</td>
+<td>含 LOT_ID</td>
+</tr>
+<tr>
+<td>CP_BIN_SUMMARY</td>
+<td>0.62</td>
+<td></td>
+</tr>
+<tr>
+<td>WAT_RESULT</td>
+<td>0.31</td>
+<td>← 分數低，不納入</td>
+</tr>
+</tbody></table>
+<p><strong>Output</strong>: 候選 tables = <code>[CP_WAFER, CP_LOT, CP_BIN_SUMMARY]</code></p>
+<h3>Step 2 — Column Filtering + CoT（LLM 輔助）</h3>
+<p><strong>Input</strong>:</p>
+<ul>
+<li>問題: <code>&quot;查 L001 批次的晶圓良率分布&quot;</code></li>
+<li>候選 Schema:<ul>
+<li><code>CP_WAFER</code>: LOT_ID, WAFER_ID, TOTAL_DIE, PASS_DIE, FAIL_DIE, YIELD, TEST_TIME, VALID_FLAG</li>
+<li><code>CP_LOT</code>: LOT_ID, PRODUCT_ID, FAB_ID, WAFER_COUNT, PROCESS_NODE, START_TIME, END_TIME, VALID_FLAG, CREATE_TIME, UPDATE_TIME</li>
+<li><code>CP_BIN_SUMMARY</code>: LOT_ID, WAFER_ID, BIN_NO, DIE_COUNT</li>
+</ul>
+</li>
+</ul>
+<p><strong>LLM 推理過程（chain_of_thought_reasoning）</strong>:</p>
+<blockquote>
+<p>&quot;使用者想查 L001 批次的晶圓良率分布。
+需要 CP_WAFER 的 WAFER_ID（識別每片）和 YIELD（良率）。
+LOT_ID 是 JOIN 條件，VALID_FLAG 是過濾條件。
+CP_LOT 只需要 LOT_ID 做 JOIN，其他欄位不需要。
+CP_BIN_SUMMARY 是 Bin 分布，與良率無直接關係，不需要。
+因此最終選用: CP_WAFER(LOT_ID, WAFER_ID, YIELD, VALID_FLAG)&quot;</p>
+</blockquote>
+<p><strong>Output</strong>:</p>
+<pre><code>selected_tables: [CP_WAFER, CP_LOT]
+selected_columns:
+  CP_WAFER: [LOT_ID, WAFER_ID, YIELD, VALID_FLAG]
+  CP_LOT:   [LOT_ID]  ← 只留 JOIN 用的欄位
+excluded: CP_BIN_SUMMARY (不相關), CP_WAFER.TOTAL_DIE/PASS_DIE/FAIL_DIE/TEST_TIME (不需要)
+</code></pre>
+<h3>Step 3 — 精簡後的 Context 進 SQL 生成</h3>
+<p><strong>Input（只有過濾後的 schema）</strong>:</p>
+<pre><code>TABLE CP_WAFER: LOT_ID, WAFER_ID, YIELD, VALID_FLAG
+TABLE CP_LOT:   LOT_ID
+JOIN: CP_WAFER.LOT_ID = CP_LOT.LOT_ID
+RULE: VALID_FLAG = 1
+Oracle dialect: FETCH FIRST n ROWS ONLY
+</code></pre>
+<p><strong>Output SQL</strong>:</p>
+<pre><code class="language-sql">SELECT w.WAFER_ID, w.YIELD
+FROM SEMI.CP_WAFER w
+JOIN SEMI.CP_LOT l ON w.LOT_ID = l.LOT_ID
+WHERE l.LOT_ID = &#39;L001&#39;
+  AND w.VALID_FLAG = 1
+ORDER BY w.WAFER_ID
+FETCH FIRST 100 ROWS ONLY
+</code></pre>
+<blockquote>
+<p><strong>Column filtering 的效益</strong>：把 15 個欄位壓縮到 4 個，避免 LLM 把不相關欄位（如 CREATE_TIME, FAB_ID）硬塞進 SELECT。</p>
+</blockquote>
+<hr>
+<h2>Q6. YAML 字典 vs WrenAI MDL</h2>
+<p><strong>結論：你不需要 MDL，你的設計已經超越它。</strong></p>
+<table>
+<thead>
+<tr>
+<th>功能</th>
+<th>WrenAI MDL</th>
+<th>你的 YAML</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Table + Column 定義</td>
+<td>✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>欄位說明（comment）</td>
+<td>✅</td>
+<td>✅ 更詳細</td>
+</tr>
+<tr>
+<td>JOIN 關係</td>
+<td>✅</td>
+<td>✅ joinPatterns + FK</td>
+</tr>
+<tr>
+<td>業務規則</td>
+<td>✅ metrics</td>
+<td>✅ businessRules + sqlPattern</td>
+</tr>
+<tr>
+<td>查詢範例</td>
+<td>✅</td>
+<td>✅ queryPatterns + SQL</td>
+</tr>
+<tr>
+<td>Oracle 方言規則</td>
+<td>⚠️ 透過 sql_functions</td>
+<td>✅ _global_rules.yaml 完整</td>
+</tr>
+<tr>
+<td>觸發關鍵詞</td>
+<td>❌</td>
+<td>✅ triggerKeywords</td>
+</tr>
+<tr>
+<td>軟刪除偵測</td>
+<td>❌</td>
+<td>✅ autoDetected.softDeleteColumn</td>
+</tr>
+<tr>
+<td>機器可執行</td>
+<td>✅（Wren Engine 解析）</td>
+<td>❌ 需要自己的 loader</td>
+</tr>
+</tbody></table>
+<blockquote>
+<p>你唯一缺的是「loader + injector」——也就是一個把這些 YAML 在 runtime 正確讀出來、塞進 context 的程式邏輯。內容你已經有了，差的是管道。</p>
+</blockquote>
+<hr>
+<h2>Q7. question_recommendation 和 data_assistance</h2>
+<h3>data_assistance（問題模糊時的引導）</h3>
+<pre><code class="language-python">DATA_ASSISTANCE_PROMPT = &quot;&quot;&quot;
+使用者問了一個模糊問題，無法直接生成 SQL。
+請根據可用的資料模組，提供 2-3 個具體可查詢的方向建議。
+限制 100 字以內。
+
+可用模組: CP（晶圓針測）、WAT（電性測試）
+使用者問題: &quot;{ambiguous_question}&quot;
+缺少資訊: {missing_info}
+
+回覆格式：
+&quot;你的問題需要更多資訊才能查詢。你可以這樣問：
+ • [具體問法 1]
+ • [具體問法 2]
+ 請問你想查哪一種？&quot;
+&quot;&quot;&quot;
+</code></pre>
+<p><strong>實際例子</strong>：</p>
+<p>使用者: <code>&quot;幫我看一下最近的狀況&quot;</code></p>
+<p>data_assistance 輸出:</p>
+<blockquote>
+<p>你的問題需要更多資訊才能查詢。你可以這樣問：</p>
+<ul>
+<li>「查本週 CP 批次的平均良率」</li>
+<li>「查最近 7 天有哪些批次良率低於 90%」</li>
+<li>「查 WAT_LOT 本月新進批次清單」</li>
+</ul>
+<p>請問你想查哪一種？</p>
+</blockquote>
+<h3>question_recommendation（系統主動推薦）</h3>
+<p>從 YAML 的 <code>queryPatterns</code> + <code>triggerKeywords</code> 自動產生，不需要複雜的 LLM：</p>
+<pre><code class="language-python">def recommend_questions(user_query: str, loaded_modules: list) -&gt; list:
+    &quot;&quot;&quot;
+    1. 用 user_query 比對所有模組的 triggerKeywords
+    2. 命中的模組 → 取出 queryPatterns
+    3. 回傳 3-5 個推薦問題
+    &quot;&quot;&quot;
+    recommendations = []
+    for module in loaded_modules:
+        for pattern in module[&quot;queryPatterns&quot;]:
+            if any(kw in user_query for kw in pattern[&quot;triggers&quot;]):
+                recommendations.append({
+                    &quot;description&quot;: pattern[&quot;description&quot;],
+                    &quot;id&quot;: pattern[&quot;id&quot;]
+                })
+    return recommendations[:5]
+</code></pre>
+<p><strong>效果</strong>：</p>
+<p>使用者輸入: <code>&quot;CP 良率&quot;</code></p>
+<p>推薦問題（來自 queryPatterns）:</p>
+<ol>
+<li>查詢指定批次的晶圓良率 <code>[QP-CP-001]</code></li>
+<li>查詢產品別批次清單與晶圓數 <code>[QP-CP-003]</code></li>
+<li>查詢指定晶圓的 Bin 分佈 <code>[QP-CP-002]</code></li>
+</ol>
+<blockquote>
+<p>使用者點選 → 帶入完整標準問句 → 直接進 SQL pipeline</p>
+<p>好處：不靠 LLM、零成本、零隨機性，使用者點選後問題就已經是標準格式，可以 100% 命中 queryPatterns SQL 範例。</p>
+</blockquote>
+<hr>
+<h2>四系統 Text2SQL 架構並列比較</h2>
+<h3>高階流程總覽</h3>
+<pre><code>┌─────────────────────────────────────────────────────────────────┐
+│              TEXT2SQL 通用 Pipeline（9 大階段）                   │
+│                                                                  │
+│  P1          P2           P3            P4           P5          │
+│  輸入層  →  意圖理解  →  Schema RAG  →  Context組裝  →  SQL生成   │
+│                                                                  │
+│  P6          P7           P8            P9                       │
+│  執行驗證  → 結果輸出  →  使用者引導  →  記憶學習                  │
+└─────────────────────────────────────────────────────────────────┘
+</code></pre>
+<blockquote>
+<p><strong>圖例</strong>：✅ 完整實作 ｜ ⚠️ 部分實作 ｜ ❌ 無 ｜ 🔵 該系統獨有亮點</p>
+</blockquote>
+<hr>
+<h3>P1 — 使用者輸入層</h3>
+<table>
+<thead>
+<tr>
+<th>子步驟</th>
+<th align="center">你的系統</th>
+<th align="center">Vanna 2.0</th>
+<th align="center">WrenAI</th>
+<th align="center">DB-GPT</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>自然語言文字輸入</td>
+<td align="center">✅</td>
+<td align="center">✅</td>
+<td align="center">✅</td>
+<td align="center">✅</td>
+</tr>
+<tr>
+<td>使用者身份識別</td>
+<td align="center">❌</td>
+<td align="center">🔵 JWT/Cookie/Header</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+</tr>
+<tr>
+<td>工具層級權限控制</td>
+<td align="center">❌</td>
+<td align="center">🔵 Tool.access_groups</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+</tr>
+<tr>
+<td>多輪對話歷史</td>
+<td align="center">❌</td>
+<td align="center">✅</td>
+<td align="center">✅ histories[]</td>
+<td align="center">✅ historical_dialogues</td>
+</tr>
+<tr>
+<td>串流輸出 SSE/WebSocket</td>
+<td align="center">❌</td>
+<td align="center">🔵 SSE + WebSocket</td>
+<td align="center">❌</td>
+<td align="center">✅</td>
+</tr>
+<tr>
+<td>非同步輪詢 API</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">🔵 query_id 輪詢</td>
+<td align="center">❌</td>
+</tr>
+<tr>
+<td>審計日誌</td>
+<td align="center">❌</td>
+<td align="center">🔵 CloudWatch/PG/Mongo</td>
+<td align="center">❌</td>
+<td align="center">⚠️ logger</td>
+</tr>
+</tbody></table>
+<hr>
+<h3>P2 — 意圖理解層</h3>
+<table>
+<thead>
+<tr>
+<th>子步驟</th>
+<th align="center">你的系統</th>
+<th align="center">Vanna 2.0</th>
+<th align="center">WrenAI</th>
+<th align="center">DB-GPT</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>意圖分類（SQL/問答/無效）</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">🔵 4類分類</td>
+<td align="center">🔵 槽位填充分類</td>
+</tr>
+<tr>
+<td>分類方式</td>
+<td align="center">—</td>
+<td align="center">—</td>
+<td align="center">LLM分類prompt</td>
+<td align="center">IntentRecognitionAgent</td>
+</tr>
+<tr>
+<td>模糊問題偵測</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">✅ MISLEADING路由</td>
+<td align="center">✅ 槽位缺失偵測</td>
+</tr>
+<tr>
+<td>問題改寫標準化</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">✅ rephrased_question</td>
+<td align="center">❌</td>
+</tr>
+<tr>
+<td>多輪指代消解</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">✅ 前置問題注入</td>
+<td align="center">✅ 對話歷史</td>
+</tr>
+<tr>
+<td>問題難度分類</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+</tr>
+<tr>
+<td>主動補全缺少資訊</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">✅ data_assistance</td>
+<td align="center">🔵 ask_user槽位補全</td>
+</tr>
+</tbody></table>
+<hr>
+<h3>P3 — Schema Retrieval 層</h3>
+<table>
+<thead>
+<tr>
+<th>子步驟</th>
+<th align="center">你的系統</th>
+<th align="center">Vanna 2.0</th>
+<th align="center">WrenAI</th>
+<th align="center">DB-GPT</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Table-level 向量搜尋</td>
+<td align="center">✅ ChromaDB</td>
+<td align="center">✅ 9種向量DB</td>
+<td align="center">✅ Qdrant</td>
+<td align="center">✅ Chroma</td>
+</tr>
+<tr>
+<td>Column-level 向量搜尋</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">✅ 獨立embedding</td>
+<td align="center">🔵 獨立field vector store</td>
+</tr>
+<tr>
+<td>LLM輔助欄位過濾（兩階段）</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">🔵 CoT欄位挑選</td>
+<td align="center">⚠️ metadata filter</td>
+</tr>
+<tr>
+<td>向量DB架構</td>
+<td align="center">單層</td>
+<td align="center">單層</td>
+<td align="center">單層</td>
+<td align="center">🔵 雙向量store(table+field)</td>
+</tr>
+<tr>
+<td>Dense + Sparse 混合搜尋</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">🔵 Qdrant dense+sparse</td>
+<td align="center">❌</td>
+</tr>
+<tr>
+<td>JOIN關係納入retrieval</td>
+<td align="center">✅ YAML手動</td>
+<td align="center">❌</td>
+<td align="center">✅ MDL定義</td>
+<td align="center">⚠️ FK資訊</td>
+</tr>
+<tr>
+<td>DB實際值查詢</td>
+<td align="center">⚠️ 部分值樣本</td>
+<td align="center">❌</td>
+<td align="center">⚠️ Wren Engine</td>
+<td align="center">❌</td>
+</tr>
+<tr>
+<td>Enum/Code欄位值索引</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+</tr>
+<tr>
+<td>業務字典/同義詞mapping</td>
+<td align="center">✅ YAML字典</td>
+<td align="center">❌</td>
+<td align="center">🔵 MDL語意層</td>
+<td align="center">❌</td>
+</tr>
+<tr>
+<td>觸發關鍵詞路由</td>
+<td align="center">🔵 triggerKeywords</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+</tr>
+<tr>
+<td>Top-K設定</td>
+<td align="center">⚠️</td>
+<td align="center">⚠️</td>
+<td align="center">✅</td>
+<td align="center">✅ schema_retrieve_top_k=10</td>
+</tr>
+</tbody></table>
+<hr>
+<h3>P4 — Context 組裝層</h3>
+<table>
+<thead>
+<tr>
+<th>子步驟</th>
+<th align="center">你的系統</th>
+<th align="center">Vanna 2.0</th>
+<th align="center">WrenAI</th>
+<th align="center">DB-GPT</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Table + Column + Comment</td>
+<td align="center">✅</td>
+<td align="center">✅</td>
+<td align="center">✅</td>
+<td align="center">✅</td>
+</tr>
+<tr>
+<td>JOIN關係說明</td>
+<td align="center">✅ joinPatterns</td>
+<td align="center">❌</td>
+<td align="center">✅ MDL</td>
+<td align="center">⚠️ FK隱含</td>
+</tr>
+<tr>
+<td>欄位值樣本</td>
+<td align="center">✅</td>
+<td align="center">❌</td>
+<td align="center">⚠️</td>
+<td align="center">❌</td>
+</tr>
+<tr>
+<td>查詢範例(few-shot)</td>
+<td align="center">✅ queryPatterns</td>
+<td align="center">✅ AgentMemory</td>
+<td align="center">✅ SQL pairs</td>
+<td align="center">⚠️ prompt constraints</td>
+</tr>
+<tr>
+<td>全域規則(安全/語法)</td>
+<td align="center">✅ _global_rules</td>
+<td align="center">❌</td>
+<td align="center">✅ USER_INSTRUCTIONS</td>
+<td align="center">⚠️ prompt constraints</td>
+</tr>
+<tr>
+<td>Oracle方言規則明確</td>
+<td align="center">✅ YAML完整</td>
+<td align="center">⚠️ 只移除分號</td>
+<td align="center">✅ sql_functions</td>
+<td align="center">✅ dialect參數注入</td>
+</tr>
+<tr>
+<td>業務指標計算定義</td>
+<td align="center">✅ businessRules+sqlPattern</td>
+<td align="center">❌</td>
+<td align="center">🔵 MDL calculated fields</td>
+<td align="center">❌</td>
+</tr>
+<tr>
+<td>Token計數+動態裁切</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">🔵 tiktoken動態reduce</td>
+<td align="center">✅ schema_max_tokens=100K</td>
+</tr>
+<tr>
+<td>顯示類型建議</td>
+<td align="center">❌</td>
+<td align="center">🔵 UI組件類型</td>
+<td align="center">❌</td>
+<td align="center">🔵 display_type(Table/Bar/Line)</td>
+</tr>
+<tr>
+<td>Soft-delete欄位自動偵測</td>
+<td align="center">🔵 autoDetected</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+</tr>
+</tbody></table>
+<hr>
+<h3>P5 — SQL 生成層</h3>
+<table>
+<thead>
+<tr>
+<th>子步驟</th>
+<th align="center">你的系統</th>
+<th align="center">Vanna 2.0</th>
+<th align="center">WrenAI</th>
+<th align="center">DB-GPT</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>LLM生成SQL</td>
+<td align="center">✅</td>
+<td align="center">✅</td>
+<td align="center">✅</td>
+<td align="center">✅</td>
+</tr>
+<tr>
+<td>Temperature設定</td>
+<td align="center">❌未設定</td>
+<td align="center">⚠️ 可設定</td>
+<td align="center">✅ 固定=0</td>
+<td align="center">⚠️ 預設=0.5</td>
+</tr>
+<tr>
+<td>強制JSON輸出格式</td>
+<td align="center">⚠️ 固定欄位</td>
+<td align="center">✅ ToolResult</td>
+<td align="center">🔵 json_object</td>
+<td align="center">✅ RESPONSE_FORMAT</td>
+</tr>
+<tr>
+<td>CoT推理過程輸出</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">✅ chain_of_thought</td>
+<td align="center">✅ thoughts欄位</td>
+</tr>
+<tr>
+<td>中英雙語Prompt</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">🔵 中英文雙版本</td>
+</tr>
+<tr>
+<td>Oracle方言自動注入</td>
+<td align="center">⚠️</td>
+<td align="center">⚠️</td>
+<td align="center">✅</td>
+<td align="center">✅ dialect變數</td>
+</tr>
+<tr>
+<td>Few-shot SQL注入</td>
+<td align="center">⚠️ 設計中</td>
+<td align="center">✅ AgentMemory</td>
+<td align="center">✅ SQL pairs</td>
+<td align="center">⚠️ prompt only</td>
+</tr>
+<tr>
+<td>問題拆解(Decomposition)</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">⚠️ DataAnalysisPlanning</td>
+</tr>
+<tr>
+<td>多候選SQL+投票</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+</tr>
+<tr>
+<td>直接回答(無需SQL)</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">✅ GENERAL路由</td>
+<td align="center">✅ direct_response欄位</td>
+</tr>
+</tbody></table>
+<hr>
+<h3>P6 — 執行驗證層</h3>
+<table>
+<thead>
+<tr>
+<th>子步驟</th>
+<th align="center">你的系統</th>
+<th align="center">Vanna 2.0</th>
+<th align="center">WrenAI</th>
+<th align="center">DB-GPT</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Oracle/DB實際執行</td>
+<td align="center">✅ Oracle MCP</td>
+<td align="center">✅ OracleRunner</td>
+<td align="center">✅ Wren Engine</td>
+<td align="center">✅ conn_oracle.py</td>
+</tr>
+<tr>
+<td>執行失敗→錯誤回LLM修正</td>
+<td align="center">✅</td>
+<td align="center">✅ Error Recovery</td>
+<td align="center">🔵 sql_correction獨立pipeline</td>
+<td align="center">✅ historical_dialogues</td>
+</tr>
+<tr>
+<td>最大重試次數明確</td>
+<td align="center">❌未定義</td>
+<td align="center">⚠️</td>
+<td align="center">✅ 狀態機控制</td>
+<td align="center">✅ max_retry_count=3</td>
+</tr>
+<tr>
+<td>SQL語法驗證(解析)</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">🔵 sqlparse驗證</td>
+</tr>
+<tr>
+<td>空結果處理</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">⚠️</td>
+<td align="center">❌</td>
+</tr>
+<tr>
+<td>SQL語意正確性驗證</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+</tr>
+<tr>
+<td>執行結果筆數限制</td>
+<td align="center">⚠️</td>
+<td align="center">⚠️</td>
+<td align="center">✅</td>
+<td align="center">✅ top_k=50</td>
+</tr>
+</tbody></table>
+<hr>
+<h3>P7 — 結果輸出層</h3>
+<table>
+<thead>
+<tr>
+<th>子步驟</th>
+<th align="center">你的系統</th>
+<th align="center">Vanna 2.0</th>
+<th align="center">WrenAI</th>
+<th align="center">DB-GPT</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>原始資料呈現</td>
+<td align="center">✅</td>
+<td align="center">✅</td>
+<td align="center">✅</td>
+<td align="center">✅</td>
+</tr>
+<tr>
+<td>LLM解讀+摘要報告</td>
+<td align="center">✅</td>
+<td align="center">✅</td>
+<td align="center">✅</td>
+<td align="center">✅</td>
+</tr>
+<tr>
+<td>圖表自動生成</td>
+<td align="center">❌</td>
+<td align="center">🔵 UI組件系統</td>
+<td align="center">❌</td>
+<td align="center">🔵 Bar/Line/Scatter/Table自動選擇</td>
+</tr>
+<tr>
+<td>儀表板生成</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">🔵 DashboardAssistantAgent</td>
+</tr>
+<tr>
+<td>結果token壓縮</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">✅</td>
+<td align="center">✅ max_num_results</td>
+</tr>
+<tr>
+<td>串流即時回傳</td>
+<td align="center">❌</td>
+<td align="center">✅ SSE</td>
+<td align="center">✅ 狀態輪詢</td>
+<td align="center">✅</td>
+</tr>
+<tr>
+<td>思考過程透明化</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">✅ reasoning</td>
+<td align="center">✅ thoughts欄位</td>
+</tr>
+</tbody></table>
+<hr>
+<h3>P8 — 使用者引導層</h3>
+<table>
+<thead>
+<tr>
+<th>子步驟</th>
+<th align="center">你的系統</th>
+<th align="center">Vanna 2.0</th>
+<th align="center">WrenAI</th>
+<th align="center">DB-GPT</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>主動澄清模糊問題</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">✅ data_assistance</td>
+<td align="center">🔵 槽位缺失自動提問</td>
+</tr>
+<tr>
+<td>推薦相關問題</td>
+<td align="center">🔵 triggerKeywords匹配</td>
+<td align="center">❌</td>
+<td align="center">🔵 question_recommendation</td>
+<td align="center">❌</td>
+</tr>
+<tr>
+<td>無法回答時優雅降級</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">✅ MISLEADING路由</td>
+<td align="center">✅ direct_response</td>
+</tr>
+<tr>
+<td>系統使用說明問答</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">🔵 user_guide_assistance</td>
+<td align="center">❌</td>
+</tr>
+<tr>
+<td>預設問題選項UI</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+</tr>
+</tbody></table>
+<hr>
+<h3>P9 — 記憶學習層</h3>
+<table>
+<thead>
+<tr>
+<th>子步驟</th>
+<th align="center">你的系統</th>
+<th align="center">Vanna 2.0</th>
+<th align="center">WrenAI</th>
+<th align="center">DB-GPT</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>QA問答集儲存</td>
+<td align="center">✅設計中</td>
+<td align="center">✅ save_tool_usage</td>
+<td align="center">✅ SQL pairs→Qdrant</td>
+<td align="center">❌</td>
+</tr>
+<tr>
+<td>相似問題搜尋</td>
+<td align="center">⚠️ 設計中</td>
+<td align="center">✅ similarity≥0.7</td>
+<td align="center">✅ sql_pairs_retrieval</td>
+<td align="center">❌</td>
+</tr>
+<tr>
+<td>短期對話記憶</td>
+<td align="center">❌</td>
+<td align="center">✅</td>
+<td align="center">✅</td>
+<td align="center">✅ BufferWindow(10輪)</td>
+</tr>
+<tr>
+<td>長期持久化記憶</td>
+<td align="center">❌</td>
+<td align="center">✅</td>
+<td align="center">❌</td>
+<td align="center">✅ LongTermMemory+embedding</td>
+</tr>
+<tr>
+<td>Insight萃取</td>
+<td align="center">❌</td>
+<td align="center">⚠️ save_text_memory</td>
+<td align="center">❌</td>
+<td align="center">🔵 is_insight記憶片段</td>
+</tr>
+<tr>
+<td>冷啟動種子機制</td>
+<td align="center">❌</td>
+<td align="center">🔵 訓練模式(DDL+SQL)</td>
+<td align="center">✅ question_recommendation</td>
+<td align="center">❌</td>
+</tr>
+<tr>
+<td>使用者確認觸發儲存</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+</tr>
+<tr>
+<td>Fine-tuning支援</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+<td align="center">❌</td>
+</tr>
+</tbody></table>
+<hr>
+<h3>基礎設施比較</h3>
+<table>
+<thead>
+<tr>
+<th>維度</th>
+<th>你的系統</th>
+<th>Vanna 2.0</th>
+<th>WrenAI</th>
+<th>DB-GPT</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>向量DB</td>
+<td>ChromaDB</td>
+<td>Qdrant/Chroma/FAISS/Pinecone等9種</td>
+<td>Qdrant(綁定)</td>
+<td>Chroma(預設)</td>
+</tr>
+<tr>
+<td>Schema向量架構</td>
+<td>單層</td>
+<td>單層</td>
+<td>單層</td>
+<td>雙向量Store(table+field)</td>
+</tr>
+<tr>
+<td>Oracle連線方式</td>
+<td>Oracle MCP</td>
+<td>oracledb</td>
+<td>Wren Engine</td>
+<td>oracle+oracledb(SID/ServiceName)</td>
+</tr>
+<tr>
+<td>架構模式</td>
+<td>Pipeline</td>
+<td>Agent為中心</td>
+<td>Pipeline+狀態機</td>
+<td>Multi-Agent Team</td>
+</tr>
+<tr>
+<td>語意層</td>
+<td>YAML業務字典</td>
+<td>❌</td>
+<td>MDL機器可執行</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>LLM彈性</td>
+<td>Claude</td>
+<td>多LLM</td>
+<td>多LLM</td>
+<td>最多(本地+雲端+fine-tune)</td>
+</tr>
+<tr>
+<td>部署複雜度</td>
+<td>低</td>
+<td>中</td>
+<td>高(Wren Engine)</td>
+<td>高(多服務)</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>缺口密度一覽</h2>
+<table>
+<thead>
+<tr>
+<th>階段</th>
+<th align="center">你的系統</th>
+<th align="center">Vanna</th>
+<th align="center">WrenAI</th>
+<th align="center">DB-GPT</th>
+<th align="center">滿分</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>P1 輸入層</td>
+<td align="center">2</td>
+<td align="center">6</td>
+<td align="center">3</td>
+<td align="center">4</td>
+<td align="center">7</td>
+</tr>
+<tr>
+<td>P2 意圖理解</td>
+<td align="center">0</td>
+<td align="center">0</td>
+<td align="center">5</td>
+<td align="center">4</td>
+<td align="center">6</td>
+</tr>
+<tr>
+<td>P3 Schema RAG</td>
+<td align="center">5</td>
+<td align="center">4</td>
+<td align="center">7</td>
+<td align="center">6</td>
+<td align="center">9</td>
+</tr>
+<tr>
+<td>P4 Context組裝</td>
+<td align="center">6</td>
+<td align="center">4</td>
+<td align="center">7</td>
+<td align="center">6</td>
+<td align="center">9</td>
+</tr>
+<tr>
+<td>P5 SQL生成</td>
+<td align="center">3</td>
+<td align="center">4</td>
+<td align="center">6</td>
+<td align="center">6</td>
+<td align="center">9</td>
+</tr>
+<tr>
+<td>P6 執行驗證</td>
+<td align="center">3</td>
+<td align="center">3</td>
+<td align="center">4</td>
+<td align="center">5</td>
+<td align="center">6</td>
+</tr>
+<tr>
+<td>P7 結果輸出</td>
+<td align="center">3</td>
+<td align="center">5</td>
+<td align="center">4</td>
+<td align="center">6</td>
+<td align="center">6</td>
+</tr>
+<tr>
+<td>P8 使用者引導</td>
+<td align="center">1</td>
+<td align="center">0</td>
+<td align="center">4</td>
+<td align="center">3</td>
+<td align="center">5</td>
+</tr>
+<tr>
+<td>P9 記憶學習</td>
+<td align="center">1</td>
+<td align="center">4</td>
+<td align="center">3</td>
+<td align="center">3</td>
+<td align="center">7</td>
+</tr>
+<tr>
+<td><strong>總計</strong></td>
+<td align="center"><strong>24/64</strong></td>
+<td align="center"><strong>30/64</strong></td>
+<td align="center"><strong>43/64</strong></td>
+<td align="center"><strong>43/64</strong></td>
+<td align="center"></td>
+</tr>
+</tbody></table>
+<hr>
+<h2>四系統設計哲學對比</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>你的系統</th>
+<th>Vanna 2.0</th>
+<th>WrenAI</th>
+<th>DB-GPT</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>哲學</strong></td>
+<td>Oracle業務知識優先</td>
+<td>使用者身份+工具安全</td>
+<td>語意正確性優先</td>
+<td>全場景AI能力</td>
+</tr>
+<tr>
+<td><strong>強項</strong></td>
+<td>・Oracle方言最完整<br>・業務字典設計最豐富<br>・queryPatterns可靠<br>・最輕量易維護</td>
+<td>・權限控制最完整<br>・向量DB選擇最彈性<br>・記憶系統最豐富<br>・擴展點最多</td>
+<td>・意圖分類最完善<br>・欄位過濾最精準<br>・優雅降級設計最好<br>・MDL語意保證</td>
+<td>・多Agent協作<br>・雙層Schema檢索<br>・圖表自動生成<br>・重試機制最嚴謹</td>
+</tr>
+<tr>
+<td><strong>弱項</strong></td>
+<td>・P2/P8幾乎空白<br>・無Token管理<br>・無對話記憶</td>
+<td>・P2意圖分類缺失<br>・無欄位過濾<br>・Oracle特化不足</td>
+<td>・向量DB綁定Qdrant<br>・架構最複雜<br>・冷啟動較難</td>
+<td>・無QA集機制<br>・temperature=0.5偏高<br>・無few-shot DB</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>值得借鑑的設計</h2>
+<table>
+<thead>
+<tr>
+<th>借鑑來源</th>
+<th>借鑑什麼</th>
+<th align="center">難度</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>DB-GPT</td>
+<td><code>max_retry_count=3</code> + sqlparse驗證 + dialect變數自動注入</td>
+<td align="center">低</td>
+</tr>
+<tr>
+<td>DB-GPT</td>
+<td><code>display_type</code> 欄位讓LLM決定用表格還是圖表</td>
+<td align="center">低</td>
+</tr>
+<tr>
+<td>WrenAI</td>
+<td>intent分類prompt（4類）+ MISLEADING優雅降級</td>
+<td align="center">低</td>
+</tr>
+<tr>
+<td>WrenAI</td>
+<td><code>temperature=0</code> + <code>response_format: json_object</code></td>
+<td align="center">低</td>
+</tr>
+<tr>
+<td>DB-GPT</td>
+<td>雙向量store架構（table store + field store分開）</td>
+<td align="center">中</td>
+</tr>
+<tr>
+<td>Vanna</td>
+<td>QA集的 <code>similarity_threshold=0.7</code> + save/search介面</td>
+<td align="center">中</td>
+</tr>
+<tr>
+<td>WrenAI</td>
+<td>tiktoken token計數 + 動態裁切context</td>
+<td align="center">中</td>
+</tr>
+<tr>
+<td>DB-GPT</td>
+<td>IntentRecognitionAgent槽位補全邏輯</td>
+<td align="center">中</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>總結：最值得做的三件事</h2>
+<ol>
+<li><strong>加意圖分類 prompt</strong>（Q3 的範例可以直接用）— 一個 LLM call，保護後面整條 pipeline</li>
+<li><strong>建 YAML loader/injector</strong>（你的 YAML 內容已經夠好，差的是讀出來注入 context 的程式）</li>
+<li><strong>queryPatterns 的觸發邏輯</strong>（完全不需要 LLM，直接關鍵詞匹配 + 推薦選項）</li>
+</ol>
