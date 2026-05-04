@@ -1,0 +1,109 @@
+如何確保拿到對的 YAML？
+
+  目前系統的問題（dictLoader.ts:83-88）
+
+  // 現在的做法：純關鍵詞比對
+  findByKeyword(question: string): ModuleIndex[] {
+    const q = question.toLowerCase()
+    return this.getIndex().filter(m =>
+      m.triggerKeywords.some(kw => q.includes(kw.toLowerCase()))
+    )
+  }
+
+  致命弱點： 使用者說「買家」找不到「客戶」模組；說「shipment」找不到「出貨」模組。只要詞彙不完全匹配就整個漏掉。
+
+  ---
+  WrenAI 的做法（兩層架構）
+
+  使用者問題
+      ↓ embed (OpenAI)
+  [Layer 1: 向量搜尋 table_descriptions]   ← 輕量描述文件，top_k=10
+      ↓ 取出 table_name
+  [Layer 2: 過濾查詢 TABLE_SCHEMA]          ← 完整 DDL，用 metadata filter
+      ↓
+  [並行: SQL pairs + 指令 + 歷史問題]
+      ↓
+  組裝 Context → LLM
+
+  核心設計：分兩層索引，第一層找「哪些表」，第二層載入「那些表的完整結構」。
+
+  ---
+  對應到你的 YAML 架構
+
+  你的 gen-dict-v3 產出兩層，剛好對應 WrenAI 的兩層：
+
+  WrenAI                          你的 YAML
+  ─────────────────────────────────────────────────────────
+  TABLE_DESCRIPTION (輕量)   ←→   _index.yaml + module description + triggerKeywords
+  TABLE_SCHEMA (完整 DDL)    ←→   schema/<TABLE>.yaml + business/module_*.yaml
+
+  ---
+  應該 embed 什麼進 Elasticsearch？
+
+  根據 specs 的 text2sql_schema index，每個文件應包含：
+
+  文件類型 A：模組摘要（對應 WrenAI 的 TABLE_DESCRIPTION）
+  {module_id} {description} {triggerKeywords} {所有表名}
+
+  範例：
+  "ORDER_MGMT 訂單管理 從建立訂單到出貨的完整流程
+   訂單 出貨 未出貨 客戶訂單 銷售訂單
+   ORDERS CUSTOMERS ORDER_ITEMS"
+  metadata: { module: "ORDER_MGMT", table_name: "" }
+
+  文件類型 B：單表摘要（對應 WrenAI 的 TABLE_DESCRIPTION per table）
+  已有！dictLoader.ts:90 的 buildEmbedText() 就在做這件事
+  = tableName + description + key columns + FK targets
+  metadata: { module: "ORDER_MGMT", table_name: "ORDERS" }
+
+  ---
+  Retrieval 三步流程（你應該實作的）
+
+  Step 1: searchSchema(question, topK=10)
+          → ES Hybrid Search（kNN + full-text）
+          → 命中模組 A 類 → 取 module 列表
+          → 命中表 B 類   → 取 table_name 列表
+
+  Step 2: 根據命中的 module 列表
+          → 載入 business/module_*.yaml（renderForContext）
+          → 若有跨模組 JOIN → 拉入相關模組
+
+  Step 3: 並行搜尋
+          → searchQA(question) → 找相似歷史問題 → 附上 SQL 範例
+          → 載入 _global_rules.yaml → 附上 Oracle 規則
+
+  組裝 Context:
+    [全域規則] + [模組業務規則 + 表結構 + JOIN路徑] + [QA 範例]
+
+          → ES Hybrid Search（kNN + full-text）
+          → 命中模組 A 類 → 取 module 列表
+          → 命中表 B 類   → 取 table_name 列表
+
+  Step 2: 根據命中的 module 列表
+          → 載入 business/module_*.yaml（renderForContext）
+          → 若有跨模組 JOIN → 拉入相關模組
+
+  Step 3: 並行搜尋
+          → searchQA(question) → 找相似歷史問題 → 附上 SQL 範例
+          → 載入 _global_rules.yaml → 附上 Oracle 規則
+
+  組裝 Context:
+    [全域規則] + [模組業務規則 + 表結構 + JOIN路徑] + [QA 範例]
+
+  ---
+  關鍵差距：你還缺一個 build_dict 步驟
+
+  gen-dict-v3 產出 YAML
+      ↓
+  【缺這一步】admin_tools.ts 的 build_dict：
+    讀 schema/<TABLE>.yaml + business/module_*.yaml
+      ↓ buildEmbedText()
+      ↓ esClient.embed()
+      ↓ esClient.upsertSchema()
+      ↓ 寫入 ES text2sql_schema index
+
+  之後查詢時：
+    問題 → embed → ES kNN 搜尋 → 取 module/table name → 讀對應 YAML
+
+  你的 specs/mcp-oracle-elasticsearch.yaml 裡的 build_dict 就是這個步驟，它是串聯 gen-dict-v3 YAML 和 Elasticsearch
+  向量搜尋的橋樑。目前這一塊尚未實作，這才是你真正要建的核心元件。
