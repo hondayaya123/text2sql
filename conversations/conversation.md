@@ -4356,3 +4356,771 @@ function QueryInterface() {
    - 撰寫向量化腳本
 
 **下一步建議**：先完成**階段 1（人工驗證）**，確保字典正確性，再進入自動化階段！🎯
+
+User: 1. 針對向量化的三個策略  你可以說明為什麼要這樣設計嗎?  其中整表向量化 存進去向量的  如果都是欄位名稱  這樣為何用自然語言會蒐尋得出來?   一般使用者又不會知道欄位名稱?
+2. glossary 哪來的  我的 dict 又沒有 這個
+
+
+我都知道概念  但現在就是要深究細節 我們先從  怎麼向量開始吧  且同時也要思考 要怎麼取的問題 怎麼拿對資料給LLM?
+
+GitHub Copilot: 非常好的問題！讓我深入解釋向量化的**真正設計理念**，這是 Text2SQL 成敗的關鍵。
+
+---
+
+## 🔍 問題 1：為什麼整表向量化能被搜到？
+
+你說得對！如果只存欄位名稱，**根本搜不到**。讓我重新設計：
+
+### ❌ **錯誤的向量化方式**（我之前的範例）
+
+```python
+# ❌ 這樣做是錯的！
+description = f"""
+表名: CP_LOT
+欄位: LOT_ID, PRODUCT_ID, FAB_ID, WAFER_COUNT
+主鍵: LOT_ID
+"""
+
+# 使用者問："查詢批次良率"
+# 向量搜尋：找不到！因為沒有 "批次"、"良率" 這些詞
+```
+
+**問題**：
+- 欄位名稱是**技術語言**（LOT_ID, PRODUCT_ID）
+- 使用者用**自然語言**（批次、產品、良率）
+- 兩者根本對不上！
+
+---
+
+### ✅ **正確的向量化方式**
+
+關鍵：**必須包含業務語意描述**
+
+```python
+def create_table_description(table_yaml):
+    """生成富含語意的描述文字"""
+    
+    # 1. 從 business layer 取得業務說明
+    business_info = get_business_entity(table_yaml['table'])
+    
+    # 2. 構建多層次描述
+    description = f"""
+# 表名稱
+{table_yaml['table']}
+
+# 業務名稱（關鍵！）
+{business_info['business_name']}  # 例如："CP批次"
+
+# 業務說明（關鍵！）
+{business_info['description']}  # 例如："晶片測試批次資訊，包含產品、廠區、製程節點等"
+
+# 包含的資訊（用自然語言！）
+- 批次編號（LOT_ID）
+- 產品代碼（PRODUCT_ID）
+- 晶圓廠別（FAB_ID）
+- 晶圓數量（WAFER_COUNT）
+- 製程節點（PROCESS_NODE）：例如 3nm, 5nm, 7nm
+
+# 常見查詢場景
+- 查詢特定批次資訊
+- 統計各產品批次數量
+- 分析不同製程節點的批次分佈
+
+# 樣本資料範例
+LOT_ID: CP2026A001, CP2026A002
+PRODUCT_ID: PROD_X100, PROD_Y200
+PROCESS_NODE: 3nm, 5nm, 7nm
+"""
+    
+    return description
+```
+
+**關鍵改變**：
+- ✅ `LOT_ID` → **批次編號**（業務語言）
+- ✅ `PRODUCT_ID` → **產品代碼**（業務語言）
+- ✅ `WAFER_COUNT` → **晶圓數量**（業務語言）
+- ✅ 加入**常見查詢場景**（增強搜尋）
+- ✅ 加入**樣本資料**（幫助理解）
+
+---
+
+### 🎯 **向量化完整範例**
+
+```python
+# 1. 讀取 schema layer
+schema = yaml.safe_load(open('dict/schema/table_cp_lot.yaml'))
+
+# 2. 讀取 business layer（這裡有業務語意！）
+business = yaml.safe_load(open('dict/business/module_chip_probing.yaml'))
+
+# 3. 找到對應的 entity
+entity = None
+for ent_name, ent_info in business['entities'].items():
+    if ent_info['schema_table'] == 'CP_LOT':
+        entity = ent_info
+        break
+
+# 4. 構建完整描述（混合技術+業務）
+description = f"""
+=== 表基本資訊 ===
+技術表名: {schema['table']}
+業務名稱: {entity['business_name']}  # "CP批次"
+業務說明: {entity['description']}     # "晶片測試批次資訊..."
+
+=== 欄位說明（業務語言） ===
+"""
+
+# 5. 對每個欄位生成業務描述
+for col_name, col_info in schema['columns'].items():
+    # 從業務層推斷欄位業務意義
+    business_meaning = infer_business_meaning(col_name, col_info)
+    
+    description += f"""
+{col_name}（{business_meaning}）:
+  - 技術型別: {col_info['type']}
+  - 業務說明: {business_meaning}
+  - 樣本值: {col_info.get('profiling', {}).get('sample_values', [])}
+"""
+
+# 範例輸出：
+"""
+LOT_ID（批次編號）:
+  - 技術型別: VARCHAR2(20)
+  - 業務說明: 晶片測試批次的唯一識別碼
+  - 樣本值: ['CP2026A001', 'CP2026A002']
+  
+PRODUCT_ID（產品代碼）:
+  - 技術型別: VARCHAR2(20)
+  - 業務說明: 被測試產品的編號
+  - 樣本值: ['PROD_X100', 'PROD_Y200']
+  
+WAFER_COUNT（晶圓數量）:
+  - 技術型別: NUMBER(3)
+  - 業務說明: 此批次包含的晶圓片數
+  - 樣本值: 通常 1~25 片
+"""
+
+# 6. 加入關聯資訊
+description += f"""
+=== 關聯表 ===
+此表是主表，關聯到：
+- CP_WAFER（晶圓資料）：透過 LOT_ID
+- CP_BIN_SUMMARY（Bin分佈）：透過 LOT_ID
+
+=== 常見查詢 ===
+1. 查詢特定批次資訊："查詢批次 CP2026A001"
+2. 統計產品批次："各產品有多少批次"
+3. 製程分析："3nm 製程的批次數量"
+4. 良率分析："查詢批次良率"（需 JOIN CP_WAFER）
+"""
+
+# 7. 向量化
+embedding = model.encode(description)
+
+# 8. 存入向量資料庫
+es.index(
+    index='dict_tables',
+    body={
+        'table_name': 'CP_LOT',
+        'business_name': 'CP批次',
+        'description_text': description,  # 完整文字（可全文檢索）
+        'embedding': embedding.tolist(),   # 向量（語意檢索）
+        'yaml_path': 'dict/schema/table_cp_lot.yaml',
+        
+        # 額外的元資料
+        'keywords': ['批次', '晶片測試', 'CP', 'lot', '產品', '製程'],
+        'related_tables': ['CP_WAFER', 'CP_BIN_SUMMARY'],
+        'row_count': 40,
+        'primary_key': ['LOT_ID']
+    }
+)
+```
+
+---
+
+### 🔎 **搜尋時如何運作**
+
+```python
+def search_tables(user_query: str):
+    """混合檢索策略"""
+    
+    # 使用者問："查詢批次良率"
+    
+    # === 策略 1: 向量檢索 ===
+    query_embedding = model.encode(user_query)
+    
+    vector_results = es.search(
+        index='dict_tables',
+        body={
+            'query': {
+                'script_score': {
+                    'query': {'match_all': {}},
+                    'script': {
+                        'source': "cosineSimilarity(params.qv, 'embedding') + 1.0",
+                        'params': {'qv': query_embedding.tolist()}
+                    }
+                }
+            },
+            'size': 5
+        }
+    )
+    
+    # 結果：
+    # 1. CP_LOT（0.85 分）  ← "批次" 匹配！
+    # 2. CP_WAFER（0.92 分）← "良率" 在描述中！
+    # 3. WAT_LOT（0.65 分）
+    
+    # === 策略 2: 關鍵字檢索（BM25）===
+    keyword_results = es.search(
+        index='dict_tables',
+        body={
+            'query': {
+                'multi_match': {
+                    'query': user_query,
+                    'fields': ['description_text^2', 'keywords^3', 'business_name^5']
+                    # ^2, ^3, ^5 是權重（business_name 最重要）
+                }
+            }
+        }
+    )
+    
+    # 結果：
+    # 1. CP_WAFER（business_name="CP晶圓" 含 "良率" 描述）
+    # 2. CP_LOT（business_name="CP批次" 含 "批次"）
+    
+    # === 策略 3: 混合排序（Hybrid Search）===
+    final_score = {}
+    for result in vector_results['hits']['hits']:
+        table = result['_source']['table_name']
+        final_score[table] = result['_score'] * 0.6  # 向量佔 60%
+    
+    for result in keyword_results['hits']['hits']:
+        table = result['_source']['table_name']
+        final_score[table] = final_score.get(table, 0) + result['_score'] * 0.4  # 關鍵字佔 40%
+    
+    # 最終結果：
+    # 1. CP_WAFER（綜合分數最高）
+    # 2. CP_LOT
+    
+    return sorted(final_score.items(), key=lambda x: x[1], reverse=True)
+```
+
+---
+
+## 🎯 問題 2：glossary 從哪來？
+
+讓我檢查我生成的檔案： 
+
+Read [](file:///h%3A/githubProject/text2sql/dict/business/module_chip_probing.yaml#60-60), lines 60 to 80
+
+Read [](file:///h%3A/githubProject/text2sql/dict/business/module_chip_probing.yaml#85-85), lines 85 to 96
+
+你說得對！`glossary` 是我**手動加入**的，資料庫本身沒有這個資訊。讓我完整解釋：
+
+---
+
+## 📖 Glossary 的來源與必要性
+
+### **來源有三種**：
+
+#### 1️⃣ **LLM 推理**（我用的方法）
+```python
+# 從表名、欄位名、樣本資料推理術語
+def infer_glossary(schema_data, business_data):
+    """LLM 推理業務術語"""
+    
+    prompt = f"""
+根據以下資料庫資訊，推理業務術語：
+
+表名: CP_LOT, CP_WAFER, CP_BIN_SUMMARY
+欄位: LOT_ID, WAFER_ID, BIN_NO, YIELD, PASS_DIE, FAIL_DIE
+
+已知資訊:
+- YIELD 是 NUMBER(7,4) 型別，範圍 0-1
+- 有 PASS_DIE, FAIL_DIE 欄位
+- BIN_NO 是 NUMBER(3)
+
+請列出可能的業務術語及定義：
+"""
+    
+    response = llm.generate(prompt)
+    
+    # LLM 輸出：
+    # - CP: Chip Probing，晶片測試
+    # - Yield: 良率，PASS_DIE / TOTAL_DIE
+    # - Bin: 測試分類編號
+    # - Die: 晶粒
+    
+    return parse_glossary(response)
+```
+
+**優點**：自動化  
+**缺點**：可能不準確，需人工審核
+
+---
+
+#### 2️⃣ **從資料庫 Comment 提取**（若有的話）
+```sql
+-- 若資料庫有良好的文檔
+COMMENT ON COLUMN CP_WAFER.YIELD IS '良率：良品晶粒數 / 總晶粒數';
+COMMENT ON TABLE CP_LOT IS 'CP測試批次主檔（CP=Chip Probing晶片探針測試）';
+```
+
+```python
+def extract_glossary_from_comments(schema):
+    """從 DB Comments 提取術語"""
+    
+    glossary = []
+    
+    # 從 table comment 找括號內的定義
+    table_comment = schema['__meta__']['db_comment']
+    # "CP測試批次主檔（CP=Chip Probing晶片探針測試）"
+    
+    matches = re.findall(r'（(.+?)=(.+?)）', table_comment)
+    for term, definition in matches:
+        glossary.append({'term': term, 'definition': definition})
+    
+    # 從 column comment 找定義
+    for col_name, col_info in schema['columns'].items():
+        comment = col_info.get('comment', '')
+        if '：' in comment or '=' in comment:
+            # "良率：良品晶粒數 / 總晶粒數"
+            term, definition = comment.split('：', 1)
+            glossary.append({'term': term, 'definition': definition})
+    
+    return glossary
+```
+
+**優點**：準確  
+**缺點**：多數資料庫沒有完整 Comment
+
+---
+
+#### 3️⃣ **人工維護**（最推薦）⭐
+```yaml
+# dict/business/_glossary.yaml（全局術語表）
+
+glossary:
+  semiconductor:
+    - term: "CP"
+      definition: "Chip Probing，晶片探針測試"
+      aliases: ["chip probing", "晶片測試"]
+      related_tables: [CP_LOT, CP_WAFER, CP_BIN_SUMMARY]
+    
+    - term: "WAT"
+      definition: "Wafer Acceptance Test，晶圓驗收測試"
+      aliases: ["wafer test", "晶圓測試"]
+      related_tables: [WAT_LOT, WAT_PARAM, WAT_RESULT]
+    
+    - term: "Yield"
+      definition: "良率，PASS_DIE / TOTAL_DIE"
+      formula: "PASS_DIE / TOTAL_DIE"
+      unit: "ratio (0-1)"
+      aliases: ["良率", "yield rate"]
+      related_columns: [CP_WAFER.YIELD]
+    
+    - term: "Bin"
+      definition: "測試結果分類編號"
+      description: "將測試結果依電性特性分類，通常 Bin 1 為良品"
+      aliases: ["bin", "分類"]
+      related_columns: [CP_BIN_SUMMARY.BIN_NO]
+```
+
+**建議流程**：
+1. 初始由 LLM 生成草稿
+2. 領域專家審核修正
+3. 持續維護更新
+
+---
+
+## 🎯 回到核心問題：完整的向量化設計
+
+讓我重新設計**三個策略**，說明為什麼要這樣分：
+
+---
+
+### **策略對比表**
+
+| 策略 | 向量化粒度 | 適用場景 | 優點 | 缺點 |
+|------|-----------|----------|------|------|
+| 1. 整表向量化 | 一張表 = 一個向量 | 粗略檢索 | 速度快，先篩選表 | 無法精確定位欄位 |
+| 2. 分欄位向量化 | 一個欄位 = 一個向量 | 精確欄位匹配 | 可直接找到欄位 | 向量數量多，速度慢 |
+| 3. 語意片段向量化 | 一個業務片段 = 一個向量 | SQL 範本匹配 | 直接給出 SQL | 需要預先定義模式 |
+
+---
+
+### **策略 1：整表向量化**（第一階段過濾）
+
+**目的**：快速縮小範圍（從 100 張表 → 3 張表）
+
+```python
+# 生成描述（重點：業務語言 + 場景）
+def create_table_vector_v2(table_name):
+    schema = load_yaml(f'dict/schema/table_{table_name.lower()}.yaml')
+    business = get_business_entity(table_name)
+    
+    # 關鍵：多面向描述
+    description = f"""
+【業務名稱】{business['business_name']}
+
+【業務說明】{business['description']}
+
+【包含的資料】
+{format_columns_in_natural_language(schema['columns'])}
+
+【使用場景】
+{extract_use_cases_from_query_patterns(business)}
+
+【關鍵字】
+{', '.join(extract_keywords(schema, business))}
+"""
+    
+    return model.encode(description)
+
+# 範例輸出：
+"""
+【業務名稱】CP晶圓
+
+【業務說明】晶圓級測試結果，記錄總Die數、良品數、良率
+
+【包含的資料】
+- 批次編號（哪個批次）
+- 晶圓編號（第幾片晶圓）
+- 總晶粒數（這片晶圓上有多少個晶片）
+- 良品數量（通過測試的晶片數量）
+- 不良品數量（未通過測試的數量）
+- 良率（良品佔比，0到1之間的數值）
+- 測試時間（何時測試的）
+
+【使用場景】
+- 查詢某批次的良率
+- 統計晶圓測試結果
+- 分析良率趨勢
+- 比較不同晶圓的表現
+
+【關鍵字】
+晶圓, wafer, 良率, yield, 測試結果, 良品, 不良品, Die, 晶粒
+"""
+```
+
+**搜尋範例**：
+```python
+user_query = "查詢批次良率"
+query_embedding = model.encode(user_query)
+
+# 向量相似度計算
+# "批次良率" 與 "批次編號、良率、查詢某批次的良率" → 高相似度！
+# 結果：CP_WAFER（0.88分）、CP_LOT（0.82分）
+```
+
+**為什麼能搜到**？
+- ✅ 描述中有「批次」（業務語言）
+- ✅ 描述中有「良率」（業務語言）
+- ✅ 使用場景有「查詢某批次的良率」（直接匹配）
+
+---
+
+### **策略 2：分欄位向量化**（第二階段精確定位）
+
+**目的**：找到具體欄位（從 3 張表 → 5 個欄位）
+
+```python
+def create_column_vector(table_name, column_name, column_info):
+    """為每個欄位生成富含語意的描述"""
+    
+    # 關鍵：用「問答對」的方式描述
+    description = f"""
+Q: 這個欄位記錄什麼資訊？
+A: {infer_business_meaning(column_name, column_info)}
+
+Q: 欄位名稱是什麼？
+A: {column_name}（資料庫技術名稱）
+
+Q: 資料型別是什麼？
+A: {column_info['type']}
+
+Q: 有哪些實際的值？
+A: {column_info.get('profiling', {}).get('sample_values', '無樣本')}
+
+Q: 這個欄位用來做什麼查詢？
+A: {infer_query_usage(column_name, column_info)}
+
+Q: 使用者會怎麼描述這個欄位？
+A: {generate_user_phrases(column_name)}
+"""
+    
+    return model.encode(description)
+
+# 範例：YIELD 欄位
+"""
+Q: 這個欄位記錄什麼資訊？
+A: 良率，表示晶圓測試的良品比例
+
+Q: 欄位名稱是什麼？
+A: YIELD（資料庫技術名稱）
+
+Q: 資料型別是什麼？
+A: NUMBER(7,4)，範圍 0-1
+
+Q: 有哪些實際的值？
+A: 典型範圍 0.85~0.95（85%~95% 良率）
+
+Q: 這個欄位用來做什麼查詢？
+A: 
+- 查詢平均良率：AVG(YIELD)
+- 查詢良率大於某值：WHERE YIELD > 0.9
+- 良率排序：ORDER BY YIELD DESC
+
+Q: 使用者會怎麼描述這個欄位？
+A: 良率、良品率、合格率、通過率、yield、pass rate
+"""
+```
+
+**搜尋範例**：
+```python
+user_query = "良率大於 90%"
+query_embedding = model.encode(user_query)
+
+# 搜尋 CP_WAFER 表的所有欄位
+# 結果：YIELD（0.95分）、PASS_DIE（0.65分）
+
+# 系統知道：
+# - 欄位名稱：YIELD
+# - WHERE 條件：YIELD > 0.9
+# - 需要除以 100？否（因為描述說 0-1 範圍）
+```
+
+---
+
+### **策略 3：語意片段向量化**（第三階段直接給 SQL）
+
+**目的**：找到現成的 SQL 範本（Few-Shot Learning）
+
+```python
+def create_pattern_vector(query_pattern):
+    """向量化查詢模式"""
+    
+    description = f"""
+【業務場景】{query_pattern['name']}
+
+【使用情境】{query_pattern['use_case']}
+
+【使用者可能的問法】
+{', '.join(query_pattern.get('triggers', []))}
+
+【涉及的表】
+{extract_tables_from_sql(query_pattern['sql_template'])}
+
+【涉及的欄位】
+{extract_columns_from_sql(query_pattern['sql_template'])}
+
+【SQL 邏輯】
+{explain_sql_logic(query_pattern['sql_template'])}
+
+【完整 SQL】
+{query_pattern['sql_template']}
+"""
+    
+    return model.encode(description)
+
+# 範例：
+"""
+【業務場景】查詢特定批次的良率
+
+【使用情境】批次良率分析
+
+【使用者可能的問法】
+查詢批次良率, 某批次的良率是多少, 查詢 LOT 的 yield, 批次測試結果
+
+【涉及的表】
+CP_LOT（批次主檔）, CP_WAFER（晶圓資料）
+
+【涉及的欄位】
+LOT_ID（批次編號）, YIELD（良率）, VALID_FLAG（有效旗標）
+
+【SQL 邏輯】
+1. 從 CP_LOT 和 CP_WAFER 兩表 JOIN
+2. 用 LOT_ID 關聯
+3. 過濾有效資料（VALID_FLAG = 1）
+4. 計算平均良率（AVG(YIELD)）
+5. 依批次分組（GROUP BY LOT_ID）
+
+【完整 SQL】
+SELECT l.LOT_ID, AVG(w.YIELD) AS avg_yield
+FROM CP_LOT l
+JOIN CP_WAFER w ON l.LOT_ID = w.LOT_ID
+WHERE l.VALID_FLAG = 1 AND l.LOT_ID = :lot_id
+GROUP BY l.LOT_ID
+"""
+```
+
+**搜尋範例**：
+```python
+user_query = "查詢批次 CP2026A001 的良率"
+
+# 向量搜尋 query_patterns
+# 結果：「查詢特定批次的良率」模式（0.92分）
+
+# 系統直接套用 SQL 範本：
+sql = pattern['sql_template'].replace(':lot_id', 'CP2026A001')
+# 完成！
+```
+
+---
+
+## 🚀 完整檢索流程（三策略協同）
+
+```python
+async def text_to_sql_complete(user_query: str):
+    """完整的 Text2SQL 流程"""
+    
+    # ===== 階段 1: 表層級檢索 =====
+    print("🔍 階段 1: 找相關的表...")
+    
+    # 1.1 向量檢索（整表向量）
+    tables_vector = search_tables_by_vector(user_query)
+    # → ['CP_WAFER', 'CP_LOT', 'WAT_RESULT']
+    
+    # 1.2 關鍵字檢索（BM25）
+    tables_keyword = search_tables_by_keywords(user_query)
+    # → ['CP_WAFER', 'CP_LOT']
+    
+    # 1.3 混合排序
+    tables = merge_and_rank(tables_vector, tables_keyword)
+    # → ['CP_WAFER', 'CP_LOT']（最相關的2張表）
+    
+    print(f"✅ 找到相關表: {tables}")
+    
+    # ===== 階段 2: 欄位層級檢索 =====
+    print("🔍 階段 2: 找具體欄位...")
+    
+    columns = {}
+    for table in tables:
+        # 只在這張表內搜尋欄位
+        cols = search_columns_by_vector(user_query, table)
+        columns[table] = cols
+    
+    # → {
+    #   'CP_WAFER': ['YIELD', 'LOT_ID'],
+    #   'CP_LOT': ['LOT_ID', 'VALID_FLAG']
+    # }
+    
+    print(f"✅ 找到相關欄位: {columns}")
+    
+    # ===== 階段 3: SQL 範本檢索 =====
+    print("🔍 階段 3: 找相似的 SQL 範本...")
+    
+    patterns = search_query_patterns_by_vector(user_query)
+    # → [
+    #   {'name': '查詢特定批次的良率', 'score': 0.92},
+    #   {'name': '查詢產品良率趨勢', 'score': 0.78}
+    # ]
+    
+    if patterns[0]['score'] > 0.85:  # 高度相似
+        print(f"✅ 找到現成範本: {patterns[0]['name']}")
+        
+        # 直接套用範本
+        sql = adapt_sql_template(patterns[0]['sql_template'], user_query)
+        return {'sql': sql, 'method': 'template'}
+    
+    # ===== 階段 4: LLM 生成（若無範本）=====
+    print("🤖 階段 4: 呼叫 LLM 生成 SQL...")
+    
+    # 載入完整 schema
+    schema_context = [load_yaml(f'dict/schema/table_{t.lower()}.yaml') for t in tables]
+    
+    # 載入 JOIN 關係
+    join_info = get_join_info(tables)
+    
+    # 載入 global rules
+    global_rules = load_yaml('dict/_global_rules.yaml')
+    
+    # 構建 Prompt
+    prompt = f"""
+你是 Oracle SQL 專家。
+
+# 相關表結構
+{format_schema_for_llm(schema_context)}
+
+# 相關欄位
+{format_columns_for_llm(columns)}
+
+# JOIN 關係
+{format_join_info(join_info)}
+
+# 全局規則
+{format_global_rules(global_rules)}
+
+# 使用者問題
+{user_query}
+
+# 參考範例（Few-Shot）
+{format_patterns_for_llm(patterns[:2])}
+
+請生成 SQL：
+"""
+    
+    response = await call_llm(prompt)
+    sql = extract_sql(response)
+    
+    return {'sql': sql, 'method': 'llm_generated'}
+```
+
+---
+
+## 📊 為什麼需要三個策略？
+
+```
+User Query: "查詢批次 CP2026A001 的良率"
+    ↓
+┌─────────────────────────────────────┐
+│ 策略 1: 整表向量化（粗篩）           │
+│ 100 張表 → 2 張表（CP_LOT, CP_WAFER）│
+│ 速度: 快（100 次向量計算）            │
+└────────────┬────────────────────────┘
+             ↓
+┌─────────────────────────────────────┐
+│ 策略 2: 分欄位向量化（精確）         │
+│ 20 個欄位 → 5 個欄位                 │
+│ 速度: 中（20 次向量計算）             │
+└────────────┬────────────────────────┘
+             ↓
+┌─────────────────────────────────────┐
+│ 策略 3: 語意片段（直接給答案）        │
+│ 10 個模式 → 1 個 SQL 範本             │
+│ 速度: 快（10 次向量計算）             │
+└────────────┬────────────────────────┘
+             ↓
+         完成！
+```
+
+**總向量計算**：100 + 20 + 10 = **130 次**
+
+**若只用策略 2**（全部欄位向量化）：
+- 100 張表 × 平均 20 欄位 = **2000 次向量計算** ❌
+- 速度慢 15 倍！
+
+---
+
+## ✅ 總結
+
+1. **整表向量化**：
+   - ❌ 不是只存欄位名稱
+   - ✅ 要存**業務語言描述 + 使用場景 + 關鍵字**
+   - 目的：快速過濾（100表→3表）
+
+2. **分欄位向量化**：
+   - ✅ 用「問答對」方式描述
+   - ✅ 包含使用者可能的說法
+   - 目的：精確定位（20欄→5欄）
+
+3. **語意片段向量化**：
+   - ✅ 向量化 SQL 範本
+   - ✅ Few-Shot Learning
+   - 目的：直接給答案（跳過 LLM）
+
+4. **glossary**：
+   - 來源：LLM 推理 + 人工維護
+   - 用途：統一術語，幫助檢索
+
+**核心原則**：向量化的是**業務語意**，不是技術欄位名！🎯
