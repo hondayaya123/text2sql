@@ -1,0 +1,97 @@
+# WAT_RESULT 表技術定義
+__meta__:
+  layer: schema
+  source: oracle_database
+  schema: SEMI
+  table: WAT_RESULT
+  generated_at: "2026-05-10T17:30:20Z"
+  row_count: 4936
+  agent: "schema-profiler-v1.0"
+
+columns:
+  lot_id:
+    name: LOT_ID
+    type: VARCHAR2(20)
+    nullable: false
+    primary_key: true
+    
+    profiling:
+      data_type_inferred: "foreign_key_id"
+      inferred_relation:
+        target_table: WAT_LOT
+        target_column: LOT_ID
+        confidence: high
+  
+  wafer_id:
+    name: WAFER_ID
+    type: VARCHAR2(5)
+    nullable: false
+    primary_key: true
+    
+    profiling:
+      data_type_inferred: "wafer_number"
+  
+  site_no:
+    name: SITE_NO
+    type: NUMBER(2,0)
+    nullable: false
+    primary_key: true
+    
+    profiling:
+      data_type_inferred: "site_position"
+  
+  param_id:
+    name: PARAM_ID
+    type: VARCHAR2(30)
+    nullable: false
+    primary_key: true
+    
+    profiling:
+      data_type_inferred: "foreign_key_id"
+      inferred_relation:
+        target_table: WAT_PARAM
+        target_column: PARAM_ID
+        confidence: high
+  
+  meas_value:
+    name: MEAS_VALUE
+    type: NUMBER(15,6)
+    nullable: true
+    
+    profiling:
+      data_type_inferred: "measurement_value"
+  
+  pass_fail:
+    name: PASS_FAIL
+    type: VARCHAR2(1)
+    nullable: true
+    
+    profiling:
+      sample_values: ["P", "F"]
+      data_type_inferred: "pass_fail_flag"
+  
+  create_time:
+    name: CREATE_TIME
+    type: DATE
+    nullable: true
+    
+    profiling:
+      data_type_inferred: "creation_timestamp"
+
+constraints:
+  primary_key:
+    name: PK_WAT_RESULT
+    columns: [LOT_ID, WAFER_ID, SITE_NO, PARAM_ID]
+
+foreign_keys: []
+
+indexes:
+  - name: PK_WAT_RESULT
+    columns: [LOT_ID, WAFER_ID, SITE_NO, PARAM_ID]
+    type: unique
+
+statistics:
+  num_rows: 4936
+
+special_columns:
+  created_timestamp: CREATE_TIME

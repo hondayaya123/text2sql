@@ -1,0 +1,26 @@
+# QA 歷史記錄（逐步累積）
+__meta__:
+  layer: synthesis
+  type: qa_patterns
+  generated_at: "2026-05-10T17:33:15Z"
+  agent: "synthesis-builder-v1.0"
+
+# 初始為空，隨著使用逐步累積
+qa_history: []
+
+# 待學習模式（從第一次詢問開始累積）
+learning_queue:
+  - query_type: "批次良率查詢"
+    example: "查詢 CP2026A001 的良率"
+    status: pending
+    
+  - query_type: "參數統計"
+    example: "VTH_N 參數的平均值是多少"
+    status: pending
+    
+  - query_type: "時間趨勢分析"
+    example: "過去一個月的良率趨勢"
+    status: pending
+
+# 說明：此檔案會在 Text2SQL 系統運行時自動更新
+# 每次成功的 QA 配對會被記錄，用於未來的 Few-Shot Learning

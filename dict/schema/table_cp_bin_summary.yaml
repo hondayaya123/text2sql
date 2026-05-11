@@ -1,0 +1,68 @@
+# CP_BIN_SUMMARY 表技術定義
+__meta__:
+  layer: schema
+  source: oracle_database
+  schema: SEMI
+  table: CP_BIN_SUMMARY
+  generated_at: "2026-05-10T17:30:11Z"
+  row_count: 3199
+  agent: "schema-profiler-v1.0"
+
+columns:
+  lot_id:
+    name: LOT_ID
+    type: VARCHAR2(20)
+    nullable: false
+    primary_key: true
+    
+    profiling:
+      data_type_inferred: "foreign_key_id"
+      inferred_relation:
+        target_table: CP_LOT
+        target_column: LOT_ID
+        confidence: high
+  
+  wafer_id:
+    name: WAFER_ID
+    type: VARCHAR2(5)
+    nullable: false
+    primary_key: true
+    
+    profiling:
+      data_type_inferred: "foreign_key_id"
+      inferred_relation:
+        target_table: CP_WAFER
+        target_column: WAFER_ID
+        confidence: medium
+  
+  bin_no:
+    name: BIN_NO
+    type: NUMBER(3,0)
+    nullable: false
+    primary_key: true
+    
+    profiling:
+      data_type_inferred: "bin_category"
+  
+  die_count:
+    name: DIE_COUNT
+    type: NUMBER(6,0)
+    nullable: true
+    
+    profiling:
+      data_type_inferred: "integer_count"
+
+constraints:
+  primary_key:
+    name: PK_CP_BIN
+    columns: [LOT_ID, WAFER_ID, BIN_NO]
+
+foreign_keys: []
+
+indexes:
+  - name: PK_CP_BIN
+    columns: [LOT_ID, WAFER_ID, BIN_NO]
+    type: unique
+
+statistics:
+  num_rows: 3199

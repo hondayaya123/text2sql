@@ -1,0 +1,104 @@
+# WAT (Wafer Acceptance Test) 業務模組定義
+# 狀態: 草稿 (需人工審核)
+__meta__:
+  layer: business
+  module: wafer_acceptance_test
+  generated_at: "2026-05-10T17:32:10Z"
+  status: draft
+  confidence: high
+  agent: "business-reasoner-v1.0"
+
+module_info:
+  name: "Wafer Acceptance Test (WAT)"
+  description: "晶圓驗收測試模組，記錄電性參數測量結果"
+  domain: "semiconductor_manufacturing"
+  process_stage: "wafer_electrical_test"
+
+entities:
+  wat_lot:
+    schema_table: WAT_LOT
+    business_name: "WAT批次"
+    description: "晶圓電性測試批次資訊"
+    primary_key: [LOT_ID]
+    
+  wat_param:
+    schema_table: WAT_PARAM
+    business_name: "WAT測試參數"
+    description: "電性測試參數定義（VTH、IDSAT等），含規格上下限"
+    primary_key: [PARAM_ID]
+    
+  wat_result:
+    schema_table: WAT_RESULT
+    business_name: "WAT測試結果"
+    description: "實際測量值記錄（每Site、每參數）"
+    primary_key: [LOT_ID, WAFER_ID, SITE_NO, PARAM_ID]
+
+relations:
+  lot_to_result:
+    name: "WAT批次包含多筆測試結果"
+    parent: WAT_LOT
+    child: WAT_RESULT
+    type: one_to_many
+    join_condition: "WAT_LOT.LOT_ID = WAT_RESULT.LOT_ID"
+    confidence: high
+    evidence: "列名匹配 + 主外鍵關係"
+    human_verified: false
+    
+  param_to_result:
+    name: "測試參數對應多筆測量值"
+    parent: WAT_PARAM
+    child: WAT_RESULT
+    type: one_to_many
+    join_condition: "WAT_PARAM.PARAM_ID = WAT_RESULT.PARAM_ID"
+    confidence: high
+    evidence: "列名匹配 + 主外鍵關係"
+    human_verified: false
+
+query_patterns:
+  - name: "查詢特定批次的參數測試結果"
+    sql_template: |
+      SELECT 
+        r.LOT_ID,
+        r.WAFER_ID,
+        r.PARAM_ID,
+        p.PARAM_NAME,
+        p.UNIT,
+        AVG(r.MEAS_VALUE) AS avg_value,
+        p.TARGET,
+        p.LSL,
+        p.USL,
+        SUM(CASE WHEN r.PASS_FAIL = 'P' THEN 1 ELSE 0 END) AS pass_count,
+        COUNT(*) AS total_count
+      FROM WAT_RESULT r
+      JOIN WAT_PARAM p ON r.PARAM_ID = p.PARAM_ID
+      WHERE r.LOT_ID = :lot_id
+      GROUP BY r.LOT_ID, r.WAFER_ID, r.PARAM_ID, p.PARAM_NAME, p.UNIT, p.TARGET, p.LSL, p.USL
+    parameters: ["lot_id"]
+    use_case: "批次參數測試分析"
+    
+  - name: "查詢參數良率（Pass Rate）"
+    sql_template: |
+      SELECT 
+        p.PARAM_ID,
+        p.PARAM_NAME,
+        SUM(CASE WHEN r.PASS_FAIL = 'P' THEN 1 ELSE 0 END) * 100.0 / COUNT(*) AS pass_rate,
+        COUNT(*) AS sample_count
+      FROM WAT_PARAM p
+      LEFT JOIN WAT_RESULT r ON p.PARAM_ID = r.PARAM_ID
+      WHERE p.VALID_FLAG = 1
+      GROUP BY p.PARAM_ID, p.PARAM_NAME
+      HAVING COUNT(*) > 0
+      ORDER BY pass_rate DESC
+    use_case: "各參數整體良率統計"
+
+glossary:
+  - term: "WAT"
+    definition: "Wafer Acceptance Test，晶圓驗收測試"
+  - term: "VTH"
+    definition: "Threshold Voltage，閾值電壓"
+  - term: "IDSAT"
+    definition: "Saturation Current，飽和電流"
+  - term: "Site"
+    definition: "測試點位置編號"
+  - term: "USL/LSL"
+    definition: "Upper/Lower Spec Limit，規格上下限"

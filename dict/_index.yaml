@@ -1,0 +1,35 @@
+# 全局模組索引
+__meta__:
+  layer: synthesis
+  type: module_index
+  generated_at: "2026-05-10T17:33:00Z"
+  agent: "synthesis-builder-v1.0"
+
+modules:
+  - id: chip_probing
+    file: business/module_chip_probing.yaml
+    name: "Chip Probing (CP)"
+    tables: [CP_LOT, CP_WAFER, CP_BIN_SUMMARY]
+    domain: semiconductor_manufacturing
+    status: draft
+    
+  - id: wafer_acceptance_test
+    file: business/module_wafer_test.yaml
+    name: "Wafer Acceptance Test (WAT)"
+    tables: [WAT_LOT, WAT_PARAM, WAT_RESULT]
+    domain: semiconductor_manufacturing
+    status: draft
+
+cross_module_relations:
+  - name: "CP與WAT可能共用同一批次"
+    modules: [chip_probing, wafer_acceptance_test]
+    description: "CP_LOT.LOT_ID 與 WAT_LOT.LOT_ID 可能指向同一批次（需人工確認）"
+    confidence: medium
+    human_verified: false
+    evidence: "列名相似，業務邏輯推測"
+
+schema_coverage:
+  total_tables: 6
+  covered_tables: 6
+  coverage_rate: 1.0
+  uncovered_tables: []

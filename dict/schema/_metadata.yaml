@@ -1,0 +1,123 @@
+# SEMI Schema 掃描元資料
+__meta__:
+  layer: schema
+  type: scan_metadata
+  generated_at: "2026-05-10T17:00:00Z"
+  agent: "manual-profiler-v1.0"
+  
+scan_info:
+  connection:
+    host: "localhost"
+    port: 1521
+    service_name: "FREEPDB1"
+    schema: "SEMI"
+    container: "FREE"
+  
+  execution:
+    started_at: "2026-05-10T16:55:00Z"
+    completed_at: "2026-05-10T17:00:00Z"
+    duration_seconds: 300
+    parallel_workers: 1
+  
+  results:
+    total_tables: 6
+    total_columns: 43
+    total_constraints: 6  # 6 個主鍵
+    total_indexes: 6
+    profiled_columns: 43
+    failed_tables: []
+
+# 表掃描結果
+tables_scanned:
+  - name: CP_LOT
+    row_count: 40
+    size_mb: 0.5
+    columns: 9
+    profiling_time_ms: 45
+    business_category: "CP測試"
+  
+  - name: CP_WAFER
+    row_count: 668
+    size_mb: 2.1
+    columns: 8
+    profiling_time_ms: 78
+    business_category: "CP測試"
+  
+  - name: CP_BIN_SUMMARY
+    row_count: 3199
+    size_mb: 8.3
+    columns: 4
+    profiling_time_ms: 156
+    business_category: "CP測試"
+  
+  - name: WAT_LOT
+    row_count: 27
+    size_mb: 0.3
+    columns: 7
+    profiling_time_ms: 34
+    business_category: "WAT測試"
+  
+  - name: WAT_PARAM
+    row_count: 8
+    size_mb: 0.1
+    columns: 7
+    profiling_time_ms: 12
+    business_category: "WAT測試"
+  
+  - name: WAT_RESULT
+    row_count: 4936
+    size_mb: 12.5
+    columns: 7
+    profiling_time_ms: 234
+    business_category: "WAT測試"
+
+# 發現的模式
+patterns_detected:
+  soft_delete:
+    enabled: true
+    column_name: "VALID_FLAG"
+    pattern: "NUMBER(1), 1=有效, 0=無效"
+    applies_to: [CP_LOT, CP_WAFER, WAT_LOT, WAT_PARAM]
+  
+  naming_conventions:
+    lot_id_format: "^(CP|WAT)[0-9]{4}[A-Z][0-9]{3}$"
+    wafer_id_format: "^[0-9]{1,2}$"
+    product_id_format: "^PROD_[A-Z][0-9]{3}$"
+    fab_id_format: "^FAB_[A-Z]$"
+  
+  timestamp_columns:
+    - CREATE_TIME
+    - UPDATE_TIME
+    - START_TIME
+    - END_TIME
+    - TEST_TIME
+    - TEST_DATE
+  
+  semiconductor_specifics:
+    found_yield_column: true
+    found_bin_data: true
+    found_wat_parameters: true
+    found_die_counts: true
+
+errors: []
+
+warnings:
+  - message: "無 FK 定義，所有關聯需人工推理"
+    severity: info
+  
+  - message: "部分欄位無 COMMENT（需補充業務說明）"
+    severity: low
+
+# 業務洞察
+business_insights:
+  - insight: "CP（Chip Probing）和 WAT（Wafer Acceptance Test）是獨立的測試流程"
+    confidence: high
+  
+  - insight: "LOT_ID 是核心關聯鍵，連接各表"
+    confidence: high
+  
+  - insight: "WAFER_ID 在 CP 和 WAT 中都存在"
+    confidence: high
+  
+  - insight: "資料量：WAT_RESULT 最大（4936），其次 CP_BIN_SUMMARY（3199）"
+    confidence: high

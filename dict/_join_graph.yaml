@@ -1,0 +1,95 @@
+# JOIN 圖與連通性分析
+__meta__:
+  layer: synthesis
+  type: join_graph
+  generated_at: "2026-05-10T17:33:05Z"
+  agent: "synthesis-builder-v1.0"
+
+# 拓撲連通性（基於 LOT_ID）
+graph:
+  nodes:
+    - table: CP_LOT
+      type: root
+      key: [LOT_ID]
+      
+    - table: CP_WAFER
+      type: child
+      key: [LOT_ID, WAFER_ID]
+      
+    - table: CP_BIN_SUMMARY
+      type: child
+      key: [LOT_ID, WAFER_ID, BIN_NO]
+      
+    - table: WAT_LOT
+      type: root
+      key: [LOT_ID]
+      
+    - table: WAT_RESULT
+      type: child
+      key: [LOT_ID, WAFER_ID, SITE_NO, PARAM_ID]
+      
+    - table: WAT_PARAM
+      type: lookup
+      key: [PARAM_ID]
+  
+  edges:
+    - from: CP_LOT
+      to: CP_WAFER
+      join_on: LOT_ID
+      type: one_to_many
+      confidence: high
+      
+    - from: CP_WAFER
+      to: CP_BIN_SUMMARY
+      join_on: "LOT_ID, WAFER_ID"
+      type: one_to_many
+      confidence: high
+      
+    - from: WAT_LOT
+      to: WAT_RESULT
+      join_on: LOT_ID
+      type: one_to_many
+      confidence: high
+      
+    - from: WAT_PARAM
+      to: WAT_RESULT
+      join_on: PARAM_ID
+      type: one_to_many
+      confidence: high
+      
+    - from: CP_LOT
+      to: WAT_LOT
+      join_on: LOT_ID
+      type: potential_cross_module
+      confidence: medium
+      comment: "需人工驗證：CP與WAT的LOT_ID是否可關聯"
+
+# 連通分量分析
+connected_components:
+  - id: cp_cluster
+    tables: [CP_LOT, CP_WAFER, CP_BIN_SUMMARY]
+    root: CP_LOT
+    description: "CP測試資料群集"
+    
+  - id: wat_cluster
+    tables: [WAT_LOT, WAT_RESULT, WAT_PARAM]
+    root: WAT_LOT
+    description: "WAT測試資料群集"
+
+# JOIN 路徑推薦（for Text2SQL）
+recommended_paths:
+  - query_intent: "查詢批次良率與Bin分佈"
+    path: "CP_LOT → CP_WAFER → CP_BIN_SUMMARY"
+    sql: |
+      SELECT l.*, w.YIELD, b.BIN_NO, b.DIE_COUNT
+      FROM CP_LOT l
+      JOIN CP_WAFER w ON l.LOT_ID = w.LOT_ID
+      JOIN CP_BIN_SUMMARY b ON w.LOT_ID = b.LOT_ID AND w.WAFER_ID = b.WAFER_ID
+      
+  - query_intent: "查詢參數測試結果與規格比較"
+    path: "WAT_LOT → WAT_RESULT ← WAT_PARAM"
+    sql: |
+      SELECT l.LOT_ID, r.PARAM_ID, p.PARAM_NAME, r.MEAS_VALUE, p.LSL, p.USL
+      FROM WAT_LOT l
+      JOIN WAT_RESULT r ON l.LOT_ID = r.LOT_ID
+      JOIN WAT_PARAM p ON r.PARAM_ID = p.PARAM_ID

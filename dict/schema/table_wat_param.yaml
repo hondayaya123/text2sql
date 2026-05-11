@@ -1,0 +1,90 @@
+# WAT_PARAM 表技術定義
+__meta__:
+  layer: schema
+  source: oracle_database
+  schema: SEMI
+  table: WAT_PARAM
+  generated_at: "2026-05-10T17:30:15Z"
+  row_count: 8
+  agent: "schema-profiler-v1.0"
+
+columns:
+  param_id:
+    name: PARAM_ID
+    type: VARCHAR2(30)
+    nullable: false
+    primary_key: true
+    
+    profiling:
+      sample_values: ["VTH_N", "VTH_P", "IDSAT_N", "IDSAT_P", "BV"]
+      data_type_inferred: "parameter_code"
+  
+  param_name:
+    name: PARAM_NAME
+    type: VARCHAR2(100)
+    nullable: true
+    
+    profiling:
+      sample_values: ["VTH_N", "VTH_P", "IDSAT_N", "IDSAT_P", "BV"]
+      data_type_inferred: "parameter_name"
+  
+  unit:
+    name: UNIT
+    type: VARCHAR2(20)
+    nullable: true
+    
+    profiling:
+      sample_values: ["V", "uA"]
+      data_type_inferred: "measurement_unit"
+  
+  usl:
+    name: USL
+    type: NUMBER(15,6)
+    nullable: true
+    comment: "Upper Spec Limit"
+    
+    profiling:
+      data_type_inferred: "spec_limit"
+  
+  lsl:
+    name: LSL
+    type: NUMBER(15,6)
+    nullable: true
+    comment: "Lower Spec Limit"
+    
+    profiling:
+      data_type_inferred: "spec_limit"
+  
+  target:
+    name: TARGET
+    type: NUMBER(15,6)
+    nullable: true
+    
+    profiling:
+      data_type_inferred: "target_value"
+  
+  valid_flag:
+    name: VALID_FLAG
+    type: NUMBER(1,0)
+    nullable: true
+    
+    profiling:
+      data_type_inferred: "boolean_flag"
+
+constraints:
+  primary_key:
+    name: PK_WAT_PARAM
+    columns: [PARAM_ID]
+
+foreign_keys: []
+
+indexes:
+  - name: PK_WAT_PARAM
+    columns: [PARAM_ID]
+    type: unique
+
+statistics:
+  num_rows: 8
+
+special_columns:
+  valid_flag: VALID_FLAG

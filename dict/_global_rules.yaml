@@ -1,0 +1,61 @@
+# 全局規則與 SQL 樣板
+__meta__:
+  layer: synthesis
+  type: global_rules
+  generated_at: "2026-05-10T17:33:10Z"
+  agent: "synthesis-builder-v1.0"
+
+database:
+  type: oracle
+  version: "23c"
+  schema: SEMI
+  
+sql_dialect:
+  limit_syntax: "FETCH FIRST :n ROWS ONLY"
+  null_check: "NVL(:column, :default)"
+  date_format: "TO_CHAR(:date_column, 'YYYY-MM-DD HH24:MI:SS')"
+  string_concat: ":str1 || :str2"
+  
+data_filtering_rules:
+  soft_delete:
+    description: "使用 VALID_FLAG 進行軟刪除過濾"
+    default_filter: "VALID_FLAG = 1 OR VALID_FLAG IS NULL"
+    applies_to:
+      - CP_LOT
+      - CP_WAFER
+      - WAT_LOT
+      - WAT_PARAM
+    
+  date_range:
+    description: "日期範圍查詢建議"
+    pattern: "WHERE :date_column BETWEEN :start_date AND :end_date"
+    
+naming_conventions:
+  table_prefix:
+    CP: "Chip Probing"
+    WAT: "Wafer Acceptance Test"
+    
+  column_suffix:
+    _ID: "識別碼"
+    _FLAG: "旗標（0/1）"
+    _TIME: "時間戳記"
+    _COUNT: "計數"
+    _NO: "編號"
+
+common_aggregations:
+  - metric: "平均良率"
+    sql: "AVG(YIELD)"
+    applies_to: [CP_WAFER]
+    
+  - metric: "總晶圓數"
+    sql: "COUNT(DISTINCT WAFER_ID)"
+    applies_to: [CP_WAFER, WAT_RESULT]
+    
+  - metric: "參數合格率"
+    sql: "SUM(CASE WHEN PASS_FAIL = 'P' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)"
+    applies_to: [WAT_RESULT]
+
+query_optimization_hints:
+  - use_index: "在 LOT_ID 上建立索引以加速查詢"
+  - avoid_cartesian: "避免 CP 與 WAT 模組間的笛卡爾積，除非業務需求明確"
+  - filter_early: "優先過濾 VALID_FLAG = 1，減少資料量"

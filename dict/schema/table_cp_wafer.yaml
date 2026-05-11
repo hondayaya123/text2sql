@@ -1,0 +1,99 @@
+# CP_WAFER 表技術定義
+__meta__:
+  layer: schema
+  source: oracle_database
+  schema: SEMI
+  table: CP_WAFER
+  generated_at: "2026-05-10T17:30:10Z"
+  row_count: 668
+  agent: "schema-profiler-v1.0"
+
+columns:
+  lot_id:
+    name: LOT_ID
+    type: VARCHAR2(20)
+    nullable: false
+    primary_key: true
+    
+    profiling:
+      data_type_inferred: "foreign_key_id"
+      inferred_relation:
+        target_table: CP_LOT
+        target_column: LOT_ID
+        confidence: high
+  
+  wafer_id:
+    name: WAFER_ID
+    type: VARCHAR2(5)
+    nullable: false
+    primary_key: true
+    
+    profiling:
+      data_type_inferred: "wafer_number"
+  
+  total_die:
+    name: TOTAL_DIE
+    type: NUMBER(6,0)
+    nullable: true
+    
+    profiling:
+      data_type_inferred: "integer_count"
+  
+  pass_die:
+    name: PASS_DIE
+    type: NUMBER(6,0)
+    nullable: true
+    
+    profiling:
+      data_type_inferred: "integer_count"
+  
+  fail_die:
+    name: FAIL_DIE
+    type: NUMBER(6,0)
+    nullable: true
+    
+    profiling:
+      data_type_inferred: "integer_count"
+  
+  yield:
+    name: YIELD
+    type: NUMBER(7,4)
+    nullable: true
+    
+    profiling:
+      data_type_inferred: "percentage_ratio"
+      unit: "ratio (0-1)"
+  
+  test_time:
+    name: TEST_TIME
+    type: DATE
+    nullable: true
+    
+    profiling:
+      data_type_inferred: "timestamp"
+  
+  valid_flag:
+    name: VALID_FLAG
+    type: NUMBER(1,0)
+    nullable: true
+    
+    profiling:
+      data_type_inferred: "boolean_flag"
+
+constraints:
+  primary_key:
+    name: PK_CP_WAFER
+    columns: [LOT_ID, WAFER_ID]
+
+foreign_keys: []
+
+indexes:
+  - name: PK_CP_WAFER
+    columns: [LOT_ID, WAFER_ID]
+    type: unique
+
+statistics:
+  num_rows: 668
+
+special_columns:
+  valid_flag: VALID_FLAG

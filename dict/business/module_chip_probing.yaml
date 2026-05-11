@@ -1,0 +1,95 @@
+# CP (Chip Probing) 業務模組定義
+# 狀態: 草稿 (需人工審核)
+__meta__:
+  layer: business
+  module: chip_probing
+  generated_at: "2026-05-10T17:32:00Z"
+  status: draft  # 需人工審核
+  confidence: high
+  agent: "business-reasoner-v1.0"
+
+module_info:
+  name: "Chip Probing (CP)"
+  description: "晶片探針測試模組，記錄晶圓級測試結果與良率分析"
+  domain: "semiconductor_manufacturing"
+  process_stage: "wafer_test"
+
+entities:
+  cp_lot:
+    schema_table: CP_LOT
+    business_name: "CP批次"
+    description: "晶片測試批次資訊，包含產品、廠區、製程節點等"
+    primary_key: [LOT_ID]
+    
+  cp_wafer:
+    schema_table: CP_WAFER
+    business_name: "CP晶圓"
+    description: "晶圓級測試結果，記錄總Die數、良品數、良率"
+    primary_key: [LOT_ID, WAFER_ID]
+    
+  cp_bin_summary:
+    schema_table: CP_BIN_SUMMARY
+    business_name: "CP Bin分佈"
+    description: "各Bin的Die數量分佈統計"
+    primary_key: [LOT_ID, WAFER_ID, BIN_NO]
+
+relations:
+  lot_to_wafer:
+    name: "CP批次包含多片晶圓"
+    parent: CP_LOT
+    child: CP_WAFER
+    type: one_to_many
+    join_condition: "CP_LOT.LOT_ID = CP_WAFER.LOT_ID"
+    confidence: high
+    evidence: "列名匹配 + 主外鍵關係"
+    human_verified: false  # 需人工驗證
+    
+  wafer_to_bin:
+    name: "CP晶圓包含多個Bin統計"
+    parent: CP_WAFER
+    child: CP_BIN_SUMMARY
+    type: one_to_many
+    join_condition: "CP_WAFER.LOT_ID = CP_BIN_SUMMARY.LOT_ID AND CP_WAFER.WAFER_ID = CP_BIN_SUMMARY.WAFER_ID"
+    confidence: high
+    evidence: "複合鍵匹配"
+    human_verified: false
+
+query_patterns:
+  - name: "查詢特定批次的良率"
+    sql_template: |
+      SELECT 
+        l.LOT_ID,
+        l.PRODUCT_ID,
+        AVG(w.YIELD) AS avg_yield,
+        COUNT(w.WAFER_ID) AS wafer_count
+      FROM CP_LOT l
+      JOIN CP_WAFER w ON l.LOT_ID = w.LOT_ID
+      WHERE l.VALID_FLAG = 1 AND w.VALID_FLAG = 1
+        AND l.LOT_ID = :lot_id
+      GROUP BY l.LOT_ID, l.PRODUCT_ID
+    parameters: ["lot_id"]
+    use_case: "批次良率分析"
+    
+  - name: "查詢產品在不同製程節點的良率趨勢"
+    sql_template: |
+      SELECT 
+        l.PRODUCT_ID,
+        l.PROCESS_NODE,
+        AVG(w.YIELD) AS avg_yield,
+        COUNT(DISTINCT l.LOT_ID) AS lot_count
+      FROM CP_LOT l
+      JOIN CP_WAFER w ON l.LOT_ID = w.LOT_ID
+      WHERE l.VALID_FLAG = 1
+      GROUP BY l.PRODUCT_ID, l.PROCESS_NODE
+      ORDER BY l.PRODUCT_ID, l.PROCESS_NODE
+    use_case: "製程節點良率比較"
+
+glossary:
+  - term: "CP"
+    definition: "Chip Probing，晶片探針測試"
+  - term: "Yield"
+    definition: "良率，PASS_DIE / TOTAL_DIE"
+  - term: "Bin"
+    definition: "測試結果分類編號"
+  - term: "Die"
+    definition: "晶粒，晶圓上的單一晶片單元"

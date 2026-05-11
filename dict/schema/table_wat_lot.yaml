@@ -1,0 +1,86 @@
+# WAT_LOT 表技術定義
+__meta__:
+  layer: schema
+  source: oracle_database
+  schema: SEMI
+  table: WAT_LOT
+  generated_at: "2026-05-10T17:30:12Z"
+  row_count: 27
+  agent: "schema-profiler-v1.0"
+
+columns:
+  lot_id:
+    name: LOT_ID
+    type: VARCHAR2(20)
+    nullable: false
+    primary_key: true
+    
+    profiling:
+      data_type_inferred: "lot_number"
+  
+  product_id:
+    name: PRODUCT_ID
+    type: VARCHAR2(20)
+    nullable: true
+    
+    profiling:
+      data_type_inferred: "product_code"
+  
+  fab_id:
+    name: FAB_ID
+    type: VARCHAR2(10)
+    nullable: true
+    
+    profiling:
+      data_type_inferred: "facility_code"
+  
+  test_date:
+    name: TEST_DATE
+    type: DATE
+    nullable: true
+    
+    profiling:
+      data_type_inferred: "date"
+  
+  eng_id:
+    name: ENG_ID
+    type: VARCHAR2(20)
+    nullable: true
+    
+    profiling:
+      data_type_inferred: "engineer_id"
+  
+  valid_flag:
+    name: VALID_FLAG
+    type: NUMBER(1,0)
+    nullable: true
+    
+    profiling:
+      data_type_inferred: "boolean_flag"
+  
+  create_time:
+    name: CREATE_TIME
+    type: DATE
+    nullable: true
+    
+    profiling:
+      data_type_inferred: "creation_timestamp"
+
+constraints:
+  primary_key:
+    name: PK_WAT_LOT
+    columns: [LOT_ID]
+
+foreign_keys: []
+
+indexes:
+  - name: PK_WAT_LOT
+    columns: [LOT_ID]
+    type: unique
+
+statistics:
+  num_rows: 27
+
+special_columns:
+  created_timestamp: CREATE_TIME
+  valid_flag: VALID_FLAG

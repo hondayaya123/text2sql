@@ -1,0 +1,243 @@
+# CP_LOT 表技術定義（自動生成）
+__meta__:
+  layer: schema
+  source: oracle_database
+  schema: SEMI
+  table: CP_LOT
+  generated_at: "2026-05-10T17:00:00Z"
+  row_count: 40
+  last_analyzed: "2026-05-10T16:55:00Z"
+  agent: "manual-profiler-v1.0"
+
+# 欄位定義
+columns:
+  lot_id:
+    name: LOT_ID
+    type: VARCHAR2(20)
+    nullable: false
+    primary_key: true
+    comment: "批號（主鍵）"
+    
+    profiling:
+      distinct_count: 40
+      null_count: 0
+      null_rate: 0.0
+      sample_values:
+        - "CP2026A001"
+        - "CP2026A002"
+        - "CP2026A003"
+        - "CP2026A004"
+        - "CP2026A005"
+      max_length: 10
+      avg_length: 10
+      min_length: 10
+      pattern: "^CP[0-9]{4}[A-Z][0-9]{3}$"
+      data_type_inferred: "lot_number"
+      format_description: "CP + 年份 + 廠別 + 流水號"
+  
+  product_id:
+    name: PRODUCT_ID
+    type: VARCHAR2(20)
+    nullable: false
+    comment: "產品代碼"
+    
+    profiling:
+      distinct_count: 15
+      null_count: 0
+      null_rate: 0.0
+      sample_values:
+        - "PROD_X100"
+        - "PROD_Y200"
+      pattern: "^PROD_[A-Z][0-9]{3}$"
+      data_type_inferred: "product_code"
+  
+  fab_id:
+    name: FAB_ID
+    type: VARCHAR2(10)
+    nullable: true
+    comment: "廠別代碼"
+    
+    profiling:
+      distinct_count: 3
+      null_count: 0
+      null_rate: 0.0
+      sample_values:
+        - "FAB_A"
+        - "FAB_B"
+      value_distribution:
+        FAB_A: 35    # 87.5%
+        FAB_B: 5     # 12.5%
+      pattern: "^FAB_[A-Z]$"
+      data_type_inferred: "facility_code"
+      is_categorical: true
+  
+  wafer_count:
+    name: WAFER_COUNT
+    type: NUMBER(3)
+    nullable: true
+    comment: "批次晶圓數量"
+    
+    profiling:
+      distinct_count: 6
+      null_count: 2
+      null_rate: 0.05
+      sample_values: [20, 24, 25]
+      value_range:
+        min: 20
+        max: 25
+        avg: 23.5
+        median: 24
+      data_type_inferred: "quantity"
+  
+  process_node:
+    name: PROCESS_NODE
+    type: VARCHAR2(20)
+    nullable: true
+    comment: "製程節點（如 28nm, 16nm）"
+    
+    profiling:
+      distinct_count: 3
+      null_count: 5
+      null_rate: 0.125
+      sample_values:
+        - "28nm"
+        - "16nm"
+        - "7nm"
+      value_distribution:
+        "28nm": 15
+        "16nm": 12
+        "7nm": 8
+      data_type_inferred: "process_technology"
+  
+  start_time:
+    name: START_TIME
+    type: DATE
+    nullable: true
+    comment: "批次開始時間"
+    
+    profiling:
+      distinct_count: 40
+      null_count: 0
+      null_rate: 0.0
+      value_range:
+        min: "2026-01-02 08:00:00"
+        max: "2026-04-15 09:30:00"
+      data_type_inferred: "process_start_timestamp"
+  
+  end_time:
+    name: END_TIME
+    type: DATE
+    nullable: true
+    comment: "批次結束時間"
+    
+    profiling:
+      distinct_count: 38
+      null_count: 3
+      null_rate: 0.075
+      data_type_inferred: "process_end_timestamp"
+  
+  valid_flag:
+    name: VALID_FLAG
+    type: NUMBER(1)
+    nullable: true
+    default_value: "1"
+    comment: "有效標記（1=有效, 0=無效/軟刪除）"
+    
+    profiling:
+      distinct_count: 2
+      null_count: 0
+      null_rate: 0.0
+      sample_values: [1, 0]
+      value_distribution:
+        1: 38    # 95%
+        0: 2     # 5%
+      data_type_inferred: "soft_delete_flag"
+      oracle_boolean_mapping:
+        1: true
+        0: false
+  
+  create_time:
+    name: CREATE_TIME
+    type: DATE
+    nullable: true
+    default_value: "SYSDATE"
+    comment: "資料建立時間"
+    
+    profiling:
+      distinct_count: 40
+      null_count: 0
+      null_rate: 0.0
+      data_type_inferred: "creation_timestamp"
+  
+  update_time:
+    name: UPDATE_TIME
+    type: DATE
+    nullable: true
+    comment: "資料更新時間"
+    
+    profiling:
+      distinct_count: 12
+      null_count: 28
+      null_rate: 0.70
+      data_type_inferred: "update_timestamp"
+
+# 約束條件
+constraints:
+  primary_key:
+    name: PK_CP_LOT
+    columns: [LOT_ID]
+    status: ENABLED
+  
+  unique_keys: []
+  
+  check_constraints:
+    - name: SYS_C008586
+      condition: "LOT_ID IS NOT NULL"
+      status: ENABLED
+    
+    - name: SYS_C008587
+      condition: "PRODUCT_ID IS NOT NULL"
+      status: ENABLED
+
+# 外鍵（實際沒有，但可推理）
+foreign_keys: []
+
+# 索引
+indexes:
+  - name: PK_CP_LOT
+    columns: [LOT_ID]
+    type: unique
+    uniqueness: UNIQUE
+    status: VALID
+
+# 統計資訊
+statistics:
+  table_size_mb: 0.5
+  avg_row_length_bytes: 128
+  num_rows: 40
+  blocks: 8
+  last_analyzed: "2026-05-10T16:55:00Z"
+  growth_rate:
+    per_day: 2
+    per_month: 60
+    per_year: 720
+
+# 自動偵測的特殊欄位
+special_columns:
+  soft_delete: VALID_FLAG
+  multi_tenant: null
+  created_timestamp: CREATE_TIME
+  updated_timestamp: UPDATE_TIME
+  primary_identifier: LOT_ID
+  product_identifier: PRODUCT_ID
+
+# 業務特徵
+business_characteristics:
+  domain: "半導體製造"
+  process: "CP（Chip Probing）晶片測試"
+  granularity: "批次級別（LOT）"
+  typical_query_patterns:
+    - "依批號查詢"
+    - "依產品查詢"
+    - "依廠別統計"
+    - "依時間範圍查詢"
