@@ -6202,3 +6202,311 @@ schema_linking_prompt_template: |
 | [DIN-SQL](https://github.com/mohammadrezapourreza/few-shot-nl2sql-with-prompting) | 方法論最清楚 | Decomposed Prompting |
 
 **下一步建議**：先補充 `column_meanings` 和擴充 `query_patterns`，然後用 LLM 直接做 Schema Linking（不用向量搜尋），先跑通一個端到端的查詢流程！
+
+User: 你前面幾項提到說 業界都不是用向量
+可是問題是說當資料庫的table 欄位 超級多  一個問題可能就只跟幾張table有關聯  那你不可能把全部的table 都給LLM 叫他幫你蒐尋吧?
+第一個是上下文污染的問題 第二個是context windows爆炸的問題啊 不是嗎
+
+GitHub Copilot: 你的質疑完全正確，我之前的說法過度簡化了。讓我糾正並深入說明。
+
+---
+
+## 你說得對：大型 Schema 不可能全塞進 LLM
+
+### 數字算一下就知道了
+
+```
+你的 SEMI Schema: 6 張表, 42 個欄位
+→ 格式化後約 800 tokens → 輕鬆塞進 Prompt ✅
+
+一般企業系統: 200 張表, 3000 個欄位
+→ 格式化後約 40,000 tokens → 爆炸 ❌
+
+半導體 MES 系統: 500+ 張表, 8000+ 個欄位
+→ 格式化後約 100,000+ tokens → 完全不可能 ❌
+```
+
+所以**業界確實需要先篩選**，我之前說「不用向量」是因為你的 SEMI Schema 太小了（6 張表全塞得進去），但一旦 Scale Up 就不行了。
+
+---
+
+## 業界真正的做法：分層過濾（Cascading Filter）
+
+```
+500 張表
+    │
+    ▼ 第一層：粗篩（快速、大量淘汰）
+   20 張表（候選）
+    │
+    ▼ 第二層：精篩（LLM 選擇）
+   3-5 張表（確定相關）
+    │
+    ▼ 第三層：生成 SQL
+    1 個 SQL
+```
+
+### 第一層：粗篩（這裡才是向量搜尋的正確用途）
+
+業界用**三種方法並行**做粗篩：
+
+#### 方法 A：值匹配（Value Matching）
+```
+User: "查詢 CP2026A001 的良率"
+
+→ 從問題中抽取可能的值: "CP2026A001"
+→ 在資料庫中搜尋哪張表有這個值
+→ SELECT table_name FROM all_tab_columns 
+   WHERE ... （用 MinHash/LSH 快速搜尋）
+→ 命中: CP_LOT.LOT_ID
+→ 候選表: CP_LOT ✅
+```
+
+這是 CHESS 的 Information Retriever 做的事，用的是 **MinHash + LSH**（Locality-Sensitive Hashing），不是向量搜尋。
+
+#### 方法 B：關鍵字匹配（Keyword Matching）
+```
+User: "查詢良率"
+
+→ 關鍵字: "良率"
+→ 搜尋 column_meaning（欄位中文描述）
+→ 命中: CP_WAFER.YIELD (描述: "良率")
+→ 候選表: CP_WAFER ✅
+```
+
+這是最簡單的全文檢索（BM25），不需要向量。
+
+#### 方法 C：語意搜尋（Semantic Search）⭐ 這裡用向量！
+```
+User: "通過率偏低的晶圓有哪些"
+
+→ "通過率" 不等於任何欄位名稱
+→ "通過率" 也不等於任何 column_meaning 的原文
+→ 但語意上 "通過率" ≈ "良率" ≈ "YIELD"
+→ 向量搜尋: embed("通過率偏低的晶圓") vs embed("良率（通過數/總數）")
+→ cosine similarity: 0.82 ← 命中！
+→ 候選表: CP_WAFER ✅
+```
+
+**所以向量搜尋確實有用，但搜的是「欄位的業務描述」，不是搜欄位名稱本身！**
+
+---
+
+### 關鍵在於：向量化的內容是什麼
+
+```
+❌ 錯誤: 向量化 "LOT_ID VARCHAR2(20) NOT NULL"
+   → 使用者問 "批次編號" 搜不到
+
+❌ 也錯誤: 向量化 "CP_LOT(LOT_ID, PRODUCT_ID, FAB_ID, ...)"
+   → 使用者問 "良率" 搜不到
+
+✅ 正確: 向量化 "CP_LOT 表：晶片探針測試批次主表，記錄批次編號、產品代碼、廠區、製程節點等資訊"
+   → 使用者問 "批次資訊" → cosine: 0.85 ✅
+
+✅ 更好: 向量化欄位級描述
+   "CP_WAFER.YIELD：良率，代表晶圓測試的通過率，計算方式為通過晶粒數除以總晶粒數"
+   → 使用者問 "通過率" → cosine: 0.82 ✅
+   → 使用者問 "合格率" → cosine: 0.79 ✅
+```
+
+**核心原則：被向量化的文字，必須和使用者可能的問法在同一個語意空間**
+
+---
+
+### 第二層：精篩（LLM 選擇）
+
+粗篩出 15-20 張候選表後，才丟給 LLM 做精確選擇：
+
+```python
+# 粗篩後的候選表（~15 張）
+candidates = ["CP_LOT", "CP_WAFER", "CP_BIN_SUMMARY", 
+              "WAT_LOT", "WAT_RESULT", ...]  # 假設粗篩到 15 張
+
+# 只載入候選表的 Schema（不是全部 500 張）
+schema_text = ""
+for table in candidates:
+    schema = load_yaml(f'dict/schema/table_{table.lower()}.yaml')
+    schema_text += format_table_schema(schema)  # ~100 tokens per table
+
+# 此時只有 15 * 100 = 1500 tokens，可以塞進 Prompt
+prompt = f"""
+以下是候選表結構:
+{schema_text}
+
+術語表:
+{glossary_text}
+
+使用者問題: "通過率偏低的晶圓有哪些"
+
+請選出回答此問題需要的表和欄位（通常 2-5 張表）。
+"""
+
+# LLM 精選
+llm_response = llm.generate(prompt)
+# → Tables: CP_LOT, CP_WAFER
+# → Columns: CP_WAFER.YIELD, CP_WAFER.LOT_ID, CP_WAFER.WAFER_ID
+```
+
+---
+
+## 所以回到你的 dict 結構：到底要向量化什麼？
+
+### 需要被向量化的文件（3 種）
+
+#### 1. 表級描述（Table Description）
+```yaml
+# 從你的 business/*.yaml 提取
+documents = [
+    {
+        "table": "CP_LOT",
+        "text": "CP批次：晶片探針測試批次主表，記錄批次編號、產品代碼、廠區、製程節點等資訊",
+        # ← 這段文字被向量化
+    },
+    {
+        "table": "CP_WAFER", 
+        "text": "CP晶圓：晶圓級測試結果，記錄總Die數、良品數、良率",
+    },
+    {
+        "table": "WAT_RESULT",
+        "text": "WAT測試結果：實際測量值記錄，包含每個測試點、每個參數的量測值和合格判定",
+    }
+]
+```
+
+#### 2. 欄位級描述（Column Description）⭐ 最重要
+```yaml
+# 這就是你的 dict 目前缺少的！
+documents = [
+    {
+        "table": "CP_WAFER",
+        "column": "YIELD",
+        "text": "良率：晶圓測試的通過率，通過晶粒數除以總晶粒數，數值範圍0到1",
+        # ← 這段文字被向量化
+    },
+    {
+        "table": "WAT_PARAM",
+        "column": "USL",
+        "text": "規格上限：Upper Spec Limit，量測值不可超過此值否則判定為不合格",
+    },
+    {
+        "table": "CP_LOT",
+        "column": "PROCESS_NODE",
+        "text": "製程節點：晶片製造工藝技術代號，例如 3nm、5nm、7nm",
+    }
+]
+```
+
+#### 3. 查詢範例（Query Patterns）
+```yaml
+# 從你的 business/*.yaml 的 query_patterns 提取
+documents = [
+    {
+        "text": "查詢特定批次的良率、批次良率分析",
+        # ← 這段文字被向量化
+        "sql": "SELECT AVG(YIELD) FROM ...",
+        "tables": ["CP_LOT", "CP_WAFER"]
+    }
+]
+```
+
+---
+
+## 你的 dict 具體缺什麼
+
+現在看回你的 YAML，問題在於 **欄位級的中文描述不夠**：
+
+```yaml
+# 你目前的 schema/table_cp_wafer.yaml
+columns:
+  yield:
+    name: YIELD
+    type: NUMBER(7,4)
+    nullable: true
+    profiling:
+      data_type_inferred: "percentage_ratio"  # ← LLM 看不懂
+      unit: "ratio (0-1)"                     # ← 技術語言
+```
+
+**缺少的是一句人類可讀的中文描述**，讓向量搜尋可以匹配到。
+
+你的 `glossary` 有一部分：
+```yaml
+glossary:
+  - term: "Yield"
+    definition: "良率，PASS_DIE / TOTAL_DIE"
+```
+
+但 glossary 是**全局的術語**，不是**每個欄位的描述**。兩者需要：
+
+```
+glossary: "Yield = 良率" （通用術語定義）
+column_meaning: "CP_WAFER.YIELD = 良率，晶圓測試通過率，值域 0-1" （具體欄位描述）
+```
+
+---
+
+## 修正後的架構圖
+
+```
+500 張表, 8000 個欄位
+         │
+   ┌─────┴─────────────────────────────────────┐
+   │                                           │
+   │  第一層 A: 值匹配（精確搜尋）               │
+   │  "CP2026A001" → 搜 sample_values          │
+   │  命中: CP_LOT.LOT_ID                      │
+   │                                           │
+   │  第一層 B: 關鍵字匹配（BM25 全文檢索）      │
+   │  "良率" → 搜 column_meanings 原文          │
+   │  命中: CP_WAFER.YIELD                      │
+   │                                           │
+   │  第一層 C: 語意搜尋（向量搜尋）             │
+   │  "通過率" → 搜 column_meanings 向量         │
+   │  命中: CP_WAFER.YIELD (cosine: 0.82)       │
+   │                                           │
+   └─────┬─────────────────────────────────────┘
+         │ 合併去重 → 15-20 張候選表
+         ▼
+   ┌─────────────────────────────────────────┐
+   │  第二層: LLM Schema Selector            │
+   │  輸入: 候選表 Schema + 問題 + glossary   │
+   │  輸出: 3-5 張確定相關的表                │
+   │  (~1500 tokens，LLM 輕鬆處理)           │
+   └─────┬───────────────────────────────────┘
+         │ 3-5 張表的完整 Schema
+         ▼
+   ┌─────────────────────────────────────────┐
+   │  第三層: LLM SQL Generation             │
+   │  輸入: 精選 Schema + Few-Shot + Rules   │
+   │  輸出: SQL                              │
+   └─────────────────────────────────────────┘
+```
+
+**你的 SEMI Schema（6 張表）可以跳過第一層，直接從第二層開始。**
+但如果未來 Schema 擴大到幾十張以上，第一層就必須做了。
+
+---
+
+## 所以結論
+
+### 我之前說錯了什麼
+
+| 我之前的說法 | 糾正 |
+|------------|------|
+| "業界不用向量搜尋" | ❌ **大型 Schema 需要用**，但用在粗篩 |
+| "直接把 Schema 塞進 LLM" | 只適用 < 20 張表的小型 Schema |
+| "向量搜尋只搜歷史問題" | 粗篩也搜「表/欄位的業務描述」 |
+
+### 正確的分層策略
+
+| 層級 | 方法 | 輸入 | 輸出 | 何時需要 |
+|------|------|------|------|---------|
+| 粗篩 | 值匹配 + BM25 + 向量搜尋 | 使用者問題 | 15-20 張候選表 | 表 > 20 張 |
+| 精篩 | LLM 選擇 | 候選表 Schema + 問題 | 3-5 張相關表 | 永遠需要 |
+| 生成 | LLM 生成 SQL | 精選 Schema + Few-Shot | SQL | 永遠需要 |
+
+### 你的 dict 需要改什麼
+
+**唯一真正缺少的：每個欄位的中文業務描述（column_meanings）**
+
+這個描述要寫成**使用者會問的語言**，而不是技術語言。因為向量搜尋就是比對「使用者的問法」和「欄位的描述」之間的語意距離。
